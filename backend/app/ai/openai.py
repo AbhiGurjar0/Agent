@@ -11,13 +11,7 @@ from app.db.database import get_database
 from app.db.memory_doc import agent_memory_document
 
 
-
-
 db = get_database()
-
-
-
-
 embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 

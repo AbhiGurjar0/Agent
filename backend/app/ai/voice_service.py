@@ -4,7 +4,6 @@ import io
 import whisper
 from gtts import gTTS
 from pathlib import Path
-from datetime import datetime
 
 # Load lightweight Whisper model locally (you can use "base" or "small")
 print("Loading local Whisper model...")

@@ -1,7 +1,7 @@
 # app/core/dependencies.py
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-import jwt
 from bson import ObjectId
 
 from app.core.config import settings
