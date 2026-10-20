@@ -13,4 +13,5 @@ config = SimpleNamespace(
     ),
     azure_openai_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT"),
     openai_api_key=os.getenv("OPENAI_API_KEY"),
+    
 )

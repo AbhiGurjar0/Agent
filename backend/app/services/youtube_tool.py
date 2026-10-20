@@ -29,12 +29,29 @@ async def upload_youtube_video(
     tags: Optional[List[str]] = None,
     category_id: str = "22",  # Default category "People & Blogs"
     privacy_status: str = "private",  # 'public', 'private', or 'unlisted'
+    user_id: Optional[str] = None,
 ) -> dict:
     """
     Uploads a video file to YouTube via the Data API v3 using a resumable upload chunk system.
     """
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) # adjust relative to your file location
+    workspace_dir = os.path.join(base_dir, "workspace")
     if not os.path.exists(file_path):
-        return {"status": "error", "message": f"File not found at path: {file_path}"}
+        # Fallback: Extract just the filename (e.g., 'sample.mp4') and look in the local workspace folder
+        filename = os.path.basename(file_path)
+        actual_path = os.path.join(workspace_dir, filename)
+        
+        if os.path.exists(actual_path):
+            file_path = actual_path
+        else:
+            # Ultimate fallback: Grab the most recent .mp4 file in the workspace folder
+            mp4_files = [os.path.join(workspace_dir, f) for f in os.listdir(workspace_dir) if f.endswith('.mp4')]
+            if mp4_files:
+                file_path = max(mp4_files, key=os.path.getctime)
+            else:
+                return {"status": "error", "message": f"No video files found in workspace directory: {workspace_dir}"}
+
+    print(f"Uploading resolved video file: {file_path}")
 
     try:
         print(f"Starting upload for file: {file_path} with title: '{title}' and description: '{description}'")

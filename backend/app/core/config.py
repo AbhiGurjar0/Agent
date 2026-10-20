@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
+import os 
 class Settings(BaseSettings):
     APP_NAME: str = "My FastAPI App"
     ENVIRONMENT: str = "development"
@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     MONGODB_URL: str =  "mongodb+srv://abhishekbainsla190:ZLwP98xzzTukNRsp@cluster0.4umua.mongodb.net/?appName=Cluster0"
     DATABASE_NAME:str="agents"
 
-    JWT_SECRET_KEY: str="Abhishek"
+    JWT_SECRET_KEY: str="a_very_long_and_secure_secret_key_that_is_at_least_32_bytes_long"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
 
@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     SMTP_PORT: int = 587
     SENDER_EMAIL: str = ""
     SENDER_PASSWORD: str = ""  # Google App Password
+    
+    # Web Seach 
+    tavily_api_key: str = os.getenv("TAVILY_API_KEY", "")
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -1,4 +1,7 @@
 tools = [
+    # =====================================================================
+    # 1. MEMORY MANAGEMENT TOOLS
+    # =====================================================================
     # Memory Tool
     {
         "type": "function",
@@ -37,6 +40,9 @@ tools = [
             },
         },
     },
+    # =====================================================================
+    # 2. TASKS & REMINDERS TOOLS
+    # =====================================================================
     # Task Tool
     {
         "type": "function",
@@ -82,6 +88,9 @@ tools = [
             },
         },
     },
+    # =====================================================================
+    # 3. SOCIAL MEDIA & CONTENT PUBLISHING TOOLS
+    # =====================================================================
     # YouTube Upload Tool
     {
         "type": "function",
@@ -124,12 +133,18 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "video_url": {"type": "string", "description": "Public HTTP URL of the video file."},
-                    "caption": {"type": "string", "description": "Caption and hashtags for the Reel."}
+                    "video_url": {
+                        "type": "string",
+                        "description": "Public HTTP URL of the video file.",
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": "Caption and hashtags for the Reel.",
+                    },
                 },
-                "required": ["video_url", "caption"]
-            }
-        }
+                "required": ["video_url", "caption"],
+            },
+        },
     },
     # Facebook Video Tool
     {
@@ -140,14 +155,23 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "file_path_or_url": {"type": "string", "description": "Local file path or video URL."},
+                    "file_path_or_url": {
+                        "type": "string",
+                        "description": "Local file path or video URL.",
+                    },
                     "title": {"type": "string", "description": "Facebook post title."},
-                    "description": {"type": "string", "description": "Facebook video post description."}
+                    "description": {
+                        "type": "string",
+                        "description": "Facebook video post description.",
+                    },
                 },
-                "required": ["file_path_or_url", "title", "description"]
-            }
-        }
+                "required": ["file_path_or_url", "title", "description"],
+            },
+        },
     },
+    # =====================================================================
+    # 4. COMMUNICATION TOOLS
+    # =====================================================================
     # Email Tool
     {
         "type": "function",
@@ -157,12 +181,283 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "to_email": {"type": "string", "description": "Recipient email address."},
-                    "subject": {"type": "string", "description": "Email subject header."},
-                    "body": {"type": "string", "description": "Email body content."}
+                    "to_email": {
+                        "type": "string",
+                        "description": "Recipient email address.",
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": "Email subject header.",
+                    },
+                    "body": {"type": "string", "description": "Email body content."},
                 },
-                "required": ["to_email", "subject", "body"]
-            }
+                "required": ["to_email", "subject", "body"],
+            },
+        },
+    },
+    # =====================================================================
+    # 5. WORKSPACE, FILE & TERMINAL TOOLS
+    # =====================================================================
+    # Local tools
+    {
+        "type": "function",
+        "function": {
+            "name": "run_terminal_command",
+            "description": "Run a shell command on the local machine workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The command to run"}
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "manage_local_files",
+            "description": "List, move, rename, write, append, read, delete, or open local files/folders inside the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "list",
+                            "move",
+                            "rename",
+                            "write",
+                            "create",
+                            "append",
+                            "read",
+                            "delete",
+                            "open",
+                        ],
+                        "description": "The action to perform on files.",
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path of the file or directory relative to workspace.",
+                    },
+                    "destination": {
+                        "type": "string",
+                        "description": "Destination path if moving files.",
+                    },
+                    "new_name": {
+                        "type": "string",
+                        "description": "The new file name when action is set to 'rename'.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The text content to write into the file when action is 'write' or 'create'.",
+                    },
+                },
+                "required": ["action", "file_path"],
+            },
+        },
+    },
+    ## for External Search
+    {
+        "type": "function",
+        "function": {
+            "name": "run_terminal_command",
+            "description": "Run a terminal command safely inside the workspace directory.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute.",
+                    }
+                },
+                "required": ["command"],
+            },
+        },
+    },
+    # =====================================================================
+    # 6. DESKTOP GUI & VISION TOOLS
+    # =====================================================================
+    ##GUI tool
+    {
+        "type": "function",
+        "function": {
+            "name": "handle_gui_action",
+            "description": "Interact with desktop apps by moving the mouse, clicking, typing text, or pressing keyboard shortcuts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["click", "type", "press", "hotkey"],
+                        "description": "The type of human-like interaction to perform.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "Text to type or shortcut combination keys separated by '+' (e.g. 'ctrl+s').",
+                    },
+                    "x": {
+                        "type": "integer",
+                        "description": "Horizontal screen coordinate to click.",
+                    },
+                    "y": {
+                        "type": "integer",
+                        "description": "Vertical screen coordinate to click.",
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Single key to press (e.g., 'enter', 'tab', 'escape').",
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    # Take Screen shot
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": "Takes a screenshot of the current screen and saves it to the workspace so the AI can visually analyze desktop applications like Postman.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+    "type": "function",
+    "function": {
+        "name": "find_element_coordinates",
+        "description": "Analyzes the current active screen screenshot to find the exact X/Y physical pixel coordinates of a button, icon, or text field.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "element_description": {
+                    "type": "string",
+                    "description": "A very specific description of the element to find (e.g., 'The blue Login button in the top right', or 'The search bar next to the logo')."
+                }
+            },
+            "required": ["element_description"]
         }
     }
+},
+    # =====================================================================
+    # 7. AGENT SELF-IMPROVEMENT TOOLS
+    # =====================================================================
+    # skill Writer
+    {
+        "type": "function",
+        "function": {
+            "name": "save_new_skill",
+            "description": "Saves a newly learned CLI tool, API usage, or automated workflow as a permanent Markdown skill in skills/. Call this whenever you execute a successful multi-step process for a tool you haven't mastered yet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_name": {
+                        "type": "string",
+                        "description": "Short, clear name for the skill (e.g., 'docker', 'vercel_deploy', 'ffmpeg_conversion').",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Brief explanation of what this skill allows Jarvis to do.",
+                    },
+                    "rules_and_examples": {
+                        "type": "string",
+                        "description": "Detailed step-by-step CLI commands, flag explanations, syntax rules, and examples.",
+                    },
+                },
+                "required": ["skill_name", "description", "rules_and_examples"],
+            },
+        },
+    },
+    # =====================================================================
+    # 8. macOS SYSTEM CONTROL TOOLS
+    # =====================================================================
+    {
+        "type": "function",
+        "function": {
+            "name": "set_volume",
+            "description": "Adjusts macOS output volume level (0-100).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "level": {
+                        "type": "integer",
+                        "description": "Volume percentage from 0 to 100",
+                    }
+                },
+                "required": ["level"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "launch_app",
+            "description": "Opens or brings a macOS application to the front (e.g. 'Spotify', 'Finder', 'Slack').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "app_name": {
+                        "type": "string",
+                        "description": "Exact application name",
+                    }
+                },
+                "required": ["app_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "revoke_task",
+            "description": "Reverts or undoes a previously executed side-effecting task (e.g., deleting a written file, killing a running terminal command). Call this when the user asks to undo, revoke, or cancel a specific action.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "integer",
+                        "description": "Optional specific task ID to revert.",
+                    },
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Optional tool name to revert (e.g. 'manage_local_files').",
+                    },
+                },
+            },
+        },
+    },
+     # =====================================================================
+        # 9. Browser tools 
+        # =====================================================================
+    
+    {
+    "type": "function",
+    "function": {
+        "name": "execute_browser_automation",
+        "description": "Dynamically navigate any website, interact with elements, and extract text. Use this to perform web operations when a specific tool doesn't exist.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "description": "A sequential list of actions to perform in the browser.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["goto", "click", "type", "extract_text", "wait_for"],
+                                "description": "The type of action to perform."
+                            },
+                            "url": {"type": "string", "description": "Used with 'goto'. The URL to navigate to."},
+                            "selector": {"type": "string", "description": "The CSS selector of the element (e.g., '#login-button', '.price-tag')."},
+                            "text": {"type": "string", "description": "Used with 'type'. The text to input into a field."}
+                        },
+                        "required": ["type"]
+                    }
+                }
+            },
+            "required": ["actions"]
+        }
+    }
+}
 ]

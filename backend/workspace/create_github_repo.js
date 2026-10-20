@@ -1,0 +1,1 @@
+javascript:(()=>{const n=document.querySelector('input[name="repository[name]"]');if(n){n.value='testing';n.dispatchEvent(new Event('input',{bubbles:true}));}const p=document.querySelector('input[value="private"]');if(p)p.click();const b=document.querySelector('button[type="submit"]');if(b)b.click();})()
