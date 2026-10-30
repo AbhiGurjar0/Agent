@@ -257,6 +257,43 @@ tools = [
             },
         },
     },
+    {"type": "function",
+    "function": {
+        "name": "native_macos_action",
+        "description": "Fast-path (50ms) native execution for macOS desktop apps. Clicks buttons by label, triggers top menu bar items, or inspects UI elements without taking screenshots.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action_type": {
+                    "type": "string",
+                    "enum": ["click_element", "select_menu", "type_text", "inspect_ui"],
+                    "description": "Type of native macOS UI interaction."
+                },
+                "app_name": {
+                    "type": "string",
+                    "description": "Name of the target macOS application (e.g., 'Finder', 'Slack', 'Xcode', 'System Settings')."
+                },
+                "element_type": {
+                    "type": "string",
+                    "description": "UI element class (e.g., 'button', 'checkbox', 'text field', 'pop up button'). Required for 'click_element'."
+                },
+                "target_label": {
+                    "type": "string",
+                    "description": "Exact text label of the button or menu item to click (e.g., 'Save', 'Run', 'General')."
+                },
+                "menu_name": {
+                    "type": "string",
+                    "description": "Top menu name (e.g., 'File', 'Edit', 'Product'). Required for 'select_menu'."
+                },
+                "text_to_type": {
+                    "type": "string",
+                    "description": "Text content to send. Required for 'type_text'."
+                }
+            },
+            "required": ["action_type", "app_name"]
+        }
+    }
+},
     ## for External Search
     {
         "type": "function",
@@ -275,6 +312,23 @@ tools = [
             },
         },
     },
+    {
+    "type": "function",
+    "function": {
+        "name": "synthesize_new_tool",
+        "description": "Writes, tests, and registers a new Python tool script on the fly when no existing tool can accomplish a task.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_requirement": {
+                    "type": "string",
+                    "description": "Detailed specification of what the new tool should do (e.g. 'Fetch weather forecast using Open-Meteo API without an API key')."
+                }
+            },
+            "required": ["tool_requirement"]
+        }
+    }
+},
     # =====================================================================
     # 6. DESKTOP GUI & VISION TOOLS
     # =====================================================================
@@ -323,22 +377,22 @@ tools = [
         },
     },
     {
-    "type": "function",
-    "function": {
-        "name": "find_element_coordinates",
-        "description": "Analyzes the current active screen screenshot to find the exact X/Y physical pixel coordinates of a button, icon, or text field.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "element_description": {
-                    "type": "string",
-                    "description": "A very specific description of the element to find (e.g., 'The blue Login button in the top right', or 'The search bar next to the logo')."
-                }
+        "type": "function",
+        "function": {
+            "name": "find_element_coordinates",
+            "description": "Analyzes the current active screen screenshot to find the exact X/Y physical pixel coordinates of a button, icon, or text field.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "element_description": {
+                        "type": "string",
+                        "description": "A very specific description of the element to find (e.g., 'The blue Login button in the top right', or 'The search bar next to the logo').",
+                    }
+                },
+                "required": ["element_description"],
             },
-            "required": ["element_description"]
-        }
-    }
-},
+        },
+    },
     # =====================================================================
     # 7. AGENT SELF-IMPROVEMENT TOOLS
     # =====================================================================
@@ -425,39 +479,53 @@ tools = [
             },
         },
     },
-     # =====================================================================
-        # 9. Browser tools 
-        # =====================================================================
-    
+    # =====================================================================
+    # 9. Browser tools
+    # =====================================================================
     {
-    "type": "function",
-    "function": {
-        "name": "execute_browser_automation",
-        "description": "Dynamically navigate any website, interact with elements, and extract text. Use this to perform web operations when a specific tool doesn't exist.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "actions": {
-                    "type": "array",
-                    "description": "A sequential list of actions to perform in the browser.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": ["goto", "click", "type", "extract_text", "wait_for"],
-                                "description": "The type of action to perform."
+        "type": "function",
+        "function": {
+            "name": "execute_browser_automation",
+            "description": "Dynamically navigate any website, interact with elements, and extract text. Use this to perform web operations when a specific tool doesn't exist.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "actions": {
+                        "type": "array",
+                        "description": "A sequential list of actions to perform in the browser.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "goto",
+                                        "click",
+                                        "type",
+                                        "extract_text",
+                                        "wait_for",
+                                    ],
+                                    "description": "The type of action to perform.",
+                                },
+                                "url": {
+                                    "type": "string",
+                                    "description": "Used with 'goto'. The URL to navigate to.",
+                                },
+                                "selector": {
+                                    "type": "string",
+                                    "description": "The CSS selector of the element (e.g., '#login-button', '.price-tag').",
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "description": "Used with 'type'. The text to input into a field.",
+                                },
                             },
-                            "url": {"type": "string", "description": "Used with 'goto'. The URL to navigate to."},
-                            "selector": {"type": "string", "description": "The CSS selector of the element (e.g., '#login-button', '.price-tag')."},
-                            "text": {"type": "string", "description": "Used with 'type'. The text to input into a field."}
+                            "required": ["type"],
                         },
-                        "required": ["type"]
                     }
-                }
+                },
+                "required": ["actions"],
             },
-            "required": ["actions"]
-        }
-    }
-}
+        },
+    },
 ]

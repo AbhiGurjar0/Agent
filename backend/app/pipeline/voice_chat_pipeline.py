@@ -9,6 +9,7 @@ import redis.asyncio as aioredis
 from app.schemas.chat import ChatCreate
 from app.ai.voice_service import speech_to_text, text_to_speech_bytes
 from app.pipeline.create_chat_pipeline import run_chat_pipeline
+from app.ai.approval_manager import approval_manager
 
 SAFE_WORKSPACE = Path("./workspace").resolve()
 SAFE_WORKSPACE.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,12 @@ async def handle_audio_ws_pipeline(
                         if text_data.get("type") == "cancel_last" and latest_cancel_event:
                             print("⚡ Interruption signal received! Triggering cancel event...")
                             latest_cancel_event.set()
+                        if text_data.get("type") == "approval_response":
+                            approval_manager.resolve_approval(
+                                approval_id=text_data.get("approval_id"),
+                                approved=text_data.get("approved", False)
+                            )
+                            continue
                     except json.JSONDecodeError:
                         pass
                     continue

@@ -148,34 +148,40 @@ async def get_chat_history(
         "history": formatted_history
     }
     
-###########################################################################################################
-############################################### Helper Functions ##########################################
-###########################################################################################################
+import asyncio, json, time
+from fastapi.responses import StreamingResponse
+from fastapi.encoders import jsonable_encoder
+from app.core.log_stream import subscribe, unsubscribe, Parser
 
+@router.post("/stream")
+async def create_chat_stream(
+    chat_data: ChatCreate,
+    db=Depends(get_database),
+    current_user: dict = Depends(get_current_user),
+):
+    q = subscribe()
+    q.put_nowait({"type": "step", "step": "plan", "title": "Plan the steps",
+                  "status": "running", "detail": None, "ts": time.time()})
 
-##1.Create External Tasks
+    async def worker():
+        try:
+            result = await run_chat_pipeline(chat_data=chat_data, db=db, current_user=current_user)
+            await q.put({"type": "final", "data": jsonable_encoder(result)})
+        except Exception as e:
+            await q.put({"type": "error", "message": str(e)})
+        await q.put(None)
 
+    asyncio.create_task(worker())
 
-async def create_task_in_external_app(title: str, priority: str, cookies: dict = None):
-    session_token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOjEsInVzZXJuYW1lIjoiQWJoaXNoZWsiLCJpYXQiOjE3OTA2OTY3MjQsImV4cCI6MTc5MTMwMTUyNH0.yan8zL7UmsuP8GFc1TBzkENxFBEXN8ywOOQ2pAZyi24"
-    url = "https://scheduler-theta-six.vercel.app/api/routine"
-    headers = {"Content-Type": "application/json"}
+    async def gen():
+        parser = Parser()
+        try:
+            while (item := await q.get()) is not None:
+                events = parser.feed(item) if isinstance(item, str) else [item]
+                for ev in events:
+                    yield f"data: {json.dumps(ev, default=str)}\n\n"
+        finally:
+            unsubscribe(q)
 
-    async with httpx.AsyncClient() as client:
-        res = await client.post(
-            url,
-            headers=headers,
-            json={"title": title, "priority": priority},
-            cookies={
-                "session_token": session_token
-            },  # Forwards session cookies automatically
-        )
-
-    if res.status_code == 200:
-        print(
-            f"Task created successfully in external app: Title='{title}', Priority='{priority}'"
-        )
-    else:
-        print(
-            f"Failed to create task in external app: Status Code={res.status_code}, Response={res.text}"
-        )
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

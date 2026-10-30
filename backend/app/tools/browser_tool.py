@@ -2,7 +2,6 @@ import asyncio
 import random
 from pathlib import Path
 from playwright.async_api import async_playwright
-# Use the new v2 API for playwright-stealth
 from playwright_stealth import Stealth
 
 SESSION_DIR = Path("./workspace/.auth")
@@ -10,21 +9,20 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
 async def execute_browser_automation(actions: list, session_id: str = "default") -> dict:
     """
-    Executes a sequence of dynamic browser actions using Playwright.
-    Persists cookies and local storage across runs using storage_state with stealth features.
+    Executes a sequence of dynamic browser actions using Playwright with stealth.
+    Properly handles and reports failure statuses.
     """
     results = []
     state_file = SESSION_DIR / f"{session_id}.json"
+    has_error = False
+    error_message = ""
     
-    # FIX: Wrap async_playwright() in Stealth().use_async()
     async with Stealth().use_async(async_playwright()) as p:
-        # Launch Chromium with anti-automation flags disabled
         browser = await p.chromium.launch(
-            headless=True,
+           headless=False,
             args=["--disable-blink-features=AutomationControlled"]
         )
         
-        # Load existing cookies / state if available
         context_kwargs = {
             "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "viewport": {"width": 1280, "height": 800}
@@ -35,7 +33,6 @@ async def execute_browser_automation(actions: list, session_id: str = "default")
         else:
             results.append(f"Started fresh session for '{session_id}'.")
 
-        # Stealth patches are automatically applied to contexts spawned here
         context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
 
@@ -45,8 +42,6 @@ async def execute_browser_automation(actions: list, session_id: str = "default")
         try:
             for step, action in enumerate(actions):
                 action_type = action.get("type")
-                
-                # Introduce slight humanized delays between actions (100ms - 400ms)
                 await asyncio.sleep(random.uniform(0.1, 0.4))
 
                 if action_type == "goto":
@@ -56,7 +51,6 @@ async def execute_browser_automation(actions: list, session_id: str = "default")
                     
                 elif action_type == "click":
                     selector = action.get("selector")
-                    # Use Locator for better auto-waiting and resilience
                     locator = page.locator(selector).first
                     await locator.click(timeout=10000)
                     await page.wait_for_load_state("networkidle")
@@ -67,7 +61,6 @@ async def execute_browser_automation(actions: list, session_id: str = "default")
                     text = action.get("text")
                     locator = page.locator(selector).first
                     await locator.click()
-                    # Humanized typing speed (50ms - 120ms per key)
                     await locator.type(text, delay=random.randint(50, 120))
                     results.append(f"Step {step}: Typed into {selector}")
                     
@@ -83,13 +76,23 @@ async def execute_browser_automation(actions: list, session_id: str = "default")
                     await page.locator(selector).first.wait_for(state="visible", timeout=10000)
                     results.append(f"Step {step}: Found {selector}")
 
-            # Save state (Cookies + LocalStorage) upon success
+            # Save state upon success
             await context.storage_state(path=str(state_file))
             results.append(f"Saved session state to '{state_file.name}'.")
+            screenshot_path = Path("./workspace/final_proof.png").resolve()
+            await page.screenshot(path=str(screenshot_path), full_page=True)
+            results.append(f"📸 Saved visual proof to {screenshot_path}")
 
         except Exception as e:
-            results.append({"error": f"Failed at step {step} ({action_type}): {str(e)}"})
+            has_error = True
+            error_message = f"Failed at step {step} ({action_type}): {str(e)}"
+            error_screenshot_path = Path("./workspace/error_proof.png").resolve()
+            await page.screenshot(path=str(error_screenshot_path), full_page=True)
+            results.append({"error": error_message})
         finally:
             await browser.close()
             
+    if has_error:
+        return {"status": "failed", "error": error_message, "log": results}
+    
     return {"status": "completed", "log": results}

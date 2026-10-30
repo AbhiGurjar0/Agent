@@ -9,18 +9,38 @@ import scipy.io.wavfile as wav
 import sounddevice as sd
 import soundfile as sf
 from pathlib import Path
+from openwakeword.model import Model
+
+# Initialize openWakeWord with pre-trained models ('alexa', 'hey jarvis', etc.)
+owwModel = Model(wakeword_models=["hey_jarvis"], inference_framework="onnx")
+
 
 WS_URL = "ws://localhost:8000/api/v1/chats/ws/audio-chat"
-SAMPLE_RATE = 44100
+SAMPLE_RATE = 16000
 
 VOLUME_THRESHOLD = 0.035
 INTERRUPT_THRESHOLD = 0.12
 SILENCE_LIMIT_SEC = 2.0
-BLOCK_DURATION = 0.1
+BLOCK_DURATION = 0.08
 BLOCK_SIZE = int(SAMPLE_RATE * BLOCK_DURATION)
 
 SAFE_WORKSPACE = Path("./workspace").resolve()
 SAFE_WORKSPACE.mkdir(parents=True, exist_ok=True)
+
+
+def check_keyword_interruption(audio_chunk_int16) -> bool:
+    """Checks if incoming microphone frame contains an explicit interrupt keyword."""
+    # Ensure 1D flattened array for openWakeWord
+    flat_chunk = audio_chunk_int16.flatten()
+    prediction = owwModel.predict(flat_chunk)
+    
+    for model_name, score in prediction.items():
+        if score > 0.5:
+            print(f"\n⚡ Keyword '{model_name}' detected! Score: {score:.2f}")
+            # Clear internal buffers after a match
+            owwModel.reset()
+            return True
+    return False
 
 
 def capture_active_screen():
@@ -43,17 +63,24 @@ def record_until_silence():
             audio_float = audio_chunk.astype(np.float32) / 32768.0
             volume = np.sqrt(np.mean(audio_float**2))
 
-            if volume > VOLUME_THRESHOLD:
-                has_spoken = True
-                silent_blocks = 0
-                frames.append(audio_chunk)
-            elif has_spoken:
-                silent_blocks += 1
-                frames.append(audio_chunk)
-                if silent_blocks >= max_silent_blocks:
-                    frames = frames[:-max_silent_blocks]
-                    print("🛑 Pause detected. Sending...")
-                    break
+            if not has_spoken:
+                if check_keyword_interruption(audio_chunk):
+                    has_spoken = True
+                    silent_blocks = 0
+                    frames.append(audio_chunk)
+                    print("🗣️ Wake word detected! Listening to prompt...")
+            else:
+                # Once activated, collect normal speech until silence
+                if volume > VOLUME_THRESHOLD:
+                    silent_blocks = 0
+                    frames.append(audio_chunk)
+                else:
+                    silent_blocks += 1
+                    frames.append(audio_chunk)
+                    if silent_blocks >= max_silent_blocks:
+                        frames = frames[:-max_silent_blocks]
+                        print("🛑 Pause detected. Processing prompt...")
+                        break
 
     if not frames:
         return None
@@ -132,13 +159,14 @@ async def main():
                             sd.stop()
                             return
 
-                        if current_volume > INTERRUPT_THRESHOLD:
-                            print("\n⚡ [Interruption Detected] Cutting off audio!")
-                            sd.stop()
-                            interrupt_event.set()
-                            # Instantly notify backend to drop output
-                            await ws.send(json.dumps({"type": "cancel_last"}))
-                            return
+                        if latest_mic_chunk is not None:
+                            if check_keyword_interruption(latest_mic_chunk):
+                                print("\n⚡ [Verified Keyword Interruption] Cutting off audio!")
+                                sd.stop()
+                                interrupt_event.set()
+                                await ws.send(json.dumps({"type": "cancel_last"}))
+                                return
+                            latest_mic_chunk = None
 
                         await asyncio.sleep(0.02)
             except asyncio.CancelledError:
