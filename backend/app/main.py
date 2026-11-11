@@ -8,6 +8,10 @@ from app.routes.auth import router as auth_router
 # from app.pipeline.screen_monitor import ProactiveScreenMonitor
 from app.tools.registry import load_all_generated_tools
 from app.core.log_stream import install
+from app.routes.jobs import router as job_router
+from app.routes.agents import router as agent_router
+from app.routes.job_files import router as job_files_router
+   
 install()
 
 
@@ -16,6 +20,7 @@ install()
 # @asynccontextmanager
 # async def lifespan(app: FastAPI):
 #     # Start screen monitor task in background
+
 #     load_all_generated_tools()
 #     monitor_task = asyncio.create_task(monitor.start())
    
@@ -25,6 +30,13 @@ install()
 #     monitor_task.cancel()
 #     with suppress(asyncio.CancelledError):
 #         await monitor_task
+
+# @asynccontextmanager
+# async def lifespan(app):
+#     await job_engine.start(get_database())
+#     yield
+#     await job_engine.stop()
+# app = FastAPI(lifespan=lifespan)
     
 
 app = FastAPI(
@@ -52,6 +64,9 @@ app.include_router(
     auth_router,
     prefix="/api/v1",
 )
+app.include_router(job_router, prefix="/api/v1")  
+app.include_router(agent_router, prefix="/api/v1") 
+app.include_router(job_files_router, prefix="/api/v1")  # Mount next to the jobs router
 
 
 

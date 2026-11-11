@@ -36,6 +36,7 @@ class WorkerType(str, Enum):
     ANALYST = "analyst_worker"
     CODER = "coder_worker"
     MAC_OS = "mac_worker"
+    SEARCH = "search_worker"  # new worker type for web research tasks
 
 
 class GUIActionType(str, Enum):

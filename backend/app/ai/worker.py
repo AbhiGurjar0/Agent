@@ -20,6 +20,7 @@ import re
 import subprocess
 import sys
 import time
+import uuid
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -491,47 +492,216 @@ class FileWorker(BaseWorker):
 # =============================================================================
 # Mac (AppleScript)
 # =============================================================================
+# =============================================================================
+# Mac (AppleScript / JXA) - generic native-app controller
+# =============================================================================
 class MacWorker(BaseWorker):
     name = "mac"
-    payload_hint = '{"script": "tell application \\"Notes\\" to make new note with properties {body:\\"Hello\\"}"}'
-    retry_hint = "If the error contains '-1743' or 'Not authorized to send Apple events', DO NOT retry. Throw a NonRetryableError telling the user to grant Automation permissions in macOS System Settings."
+    max_retries = 3
     refine_on_error = True
+    SCRIPT_TIMEOUT = 30
+    MAX_OUTPUT = 4000
+    payload_hint = (
+        '{"script": "AppleScript source", "language": "AppleScript|JavaScript (optional)", '
+        '"verify": "optional AppleScript that returns a string starting with OK when the task really worked", '
+        '"timeout": 30}'
+    )
+    retry_hint = (
+        "Fix the script using the scripting-dictionary names shown in the error. "
+        "Rules: activate the app first; wrap risky lookups in try blocks; never use a bare error; "
+        "if the app has no dictionary, use System Events (keystroke / click menu item) with the process frontmost; "
+        "always return a short string saying what was done; return 'Result: <reason>' only for real failures."
+    )
 
-    async def execute(self, payload: Dict[str, Any], context: Dict[str, Any]) -> str:
-        """Executes raw AppleScript to control native macOS applications deeply."""
-        script_content = payload.get("script")
-        
-        if not script_content:
-            raise NonRetryableError("MacWorker payload requires a 'script' field containing AppleScript.")
+    _ALWAYS_PRESENT = {"system events", "finder", "system settings", "system preferences"}
+    _MEDIA_APPS = {"music", "spotify"}
+    _APP_RE = re.compile(r'(?:tell\s+application|application)\s*\(?\s*"([^"\\]+)"', re.I)
+    BLOCKED = re.compile(
+        r"\bsudo\b|rm\s+-rf|with\s+administrator\s+privileges|mkfs|diskutil\s+erase|do\s+shell\s+script\s+\"[^\"]*\brm\b",
+        re.I,
+    )
 
-        print(f"🍎 [MacWorker] Executing native OS script:\n------------------------\n{script_content}\n------------------------")
-        
+    # ---------------------------------------------------------------- low level
+    @staticmethod
+    def _osascript(source: str, timeout: float, language: str = "AppleScript") -> str:
         import tempfile
-        
-        def _run_script() -> str:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.scpt', delete=False) as temp_script:
-                temp_script.write(script_content)
-                temp_path = temp_script.name
-
+        suffix = ".js" if language.lower() == "javascript" else ".applescript"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8") as f:
+            f.write(source)
+            path = f.name
+        try:
+            r = subprocess.run(
+                ["osascript", "-l", language, path], capture_output=True, text=True, timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"AppleScript timed out after {timeout:.0f}s (the app may be waiting on a dialog).")
+        finally:
             try:
-                # Execute the script using macOS's built-in osascript command
-                result = subprocess.run(
-                    ["osascript", temp_path], 
-                    capture_output=True, 
-                    text=True, 
-                    timeout=15
-                )
-                
-                if result.returncode == 0:
-                    output = result.stdout.strip()
-                    return f"Mac action succeeded. Output: {output if output else 'Done.'}"
-                else:
-                    raise RuntimeError(f"AppleScript Error: {result.stderr.strip()}")
-            finally:
-                os.remove(temp_path)
+                os.remove(path)
+            except OSError:
+                pass
 
-        # Run the synchronous subprocess in a thread to keep the async loop non-blocking
-        return await asyncio.to_thread(_run_script)
+        if r.returncode == 0:
+            return (r.stdout or "").strip()
+
+        err = (r.stderr or "").strip()
+        low = err.lower()
+        if "-1743" in err or "not authorized to send apple events" in low:
+            raise NonRetryableError(
+                "macOS blocked Automation. Open System Settings > Privacy & Security > Automation and allow "
+                "the app running this backend (Terminal / VS Code / Python) to control the target app."
+            )
+        if "not allowed to send keystrokes" in low or "(1002)" in err or "assistive access" in low or "-25211" in err:
+            raise NonRetryableError(
+                "macOS blocked UI scripting. Open System Settings > Privacy & Security > Accessibility "
+                "and enable the app running this backend (Terminal / VS Code / Python)."
+            )
+        if "-128" in err or "user canceled" in low:
+            raise NonRetryableError("The action was cancelled by a macOS dialog.")
+        if "-1712" in err or "timed out" in low:
+            raise RuntimeError(f"The app did not respond in time: {err}")
+        ctx = ""
+        m = re.search(r":(\d+):(\d+): ", err)
+        if m:
+            lines = source.splitlines()
+            ln = int(m.group(1))
+            ctx = (f"\n>> line {ln}: {lines[ln - 1]!r}" if 0 < ln <= len(lines)
+                   else f"\n>> error at line {ln}, but this script has only {len(lines)} lines")
+        raise RuntimeError(f"AppleScript Error: {err}{ctx}")
+
+    def _apps_in(self, script: str) -> List[str]:
+        seen: List[str] = []
+        for name in self._APP_RE.findall(script):
+            if name not in seen:
+                seen.append(name)
+        return seen
+
+    def _is_running(self, app: str) -> bool:
+        try:
+            out = self._osascript(f'tell application "System Events" to (name of processes) contains "{app}"', 10)
+            return out.strip().lower() == "true"
+        except Exception:
+            return False
+
+    def _preflight(self, apps: List[str]) -> None:
+        for app in apps:
+            if app.lower() in self._ALWAYS_PRESENT:
+                continue
+            try:
+                self._osascript(f'id of application "{app}"', 10)
+            except NonRetryableError:
+                raise
+            except Exception:
+                raise NonRetryableError(f"Application '{app}' is not installed or could not be found.")
+            if not self._is_running(app):
+                try:
+                    subprocess.run(["open", "-g", "-a", app], check=True, capture_output=True, timeout=20)
+                except Exception as e:
+                    raise RuntimeError(f"Could not launch '{app}': {e}")
+                time.sleep(2.0)
+                if app.lower() in self._MEDIA_APPS:
+                    try:
+                        self._osascript(f'tell application "System Events" to set visible of process "{app}" to false', 10)
+                    except Exception:
+                        pass
+            # Permission probe: triggers the Automation prompt now, with a clear error if denied.
+            self._osascript(f'tell application "{app}" to get name', 30)
+
+    def _sdef_hint(self, apps: List[str]) -> str:
+        parts: List[str] = []
+        for app in apps:
+            if app.lower() in {"system events"}:
+                continue
+            try:
+                path = self._osascript(f'POSIX path of (path to application "{app}")', 10)
+                r = subprocess.run(["sdef", path], capture_output=True, text=True, timeout=15)
+                names = sorted(set(re.findall(r'<(?:command|class|property|element)[^>]*\bname="([^"]+)"', r.stdout or "")))
+                if names:
+                    parts.append(f"Scripting dictionary of {app}: " + ", ".join(names)[:2000])
+                else:
+                    parts.append(
+                        f"{app} has NO scripting dictionary: use System Events UI scripting "
+                        f"(activate the app, then keystroke / click menu item)."
+                    )
+            except Exception:
+                continue
+        return "\n".join(parts)
+
+    # ---------------------------------------------------------------- verification
+    @staticmethod
+    def _wants_playback(script: str, app: str) -> bool:
+        s = script.lower()
+        if f'"{app.lower()}"' not in s:
+            return False
+        if re.search(r"\b(pause|stop)\b", s) and "play" not in s:
+            return False
+        return bool(re.search(r"play|next track|previous track|keystroke space|key code 49", s))
+    def _player_state(self, app: str) -> str:
+        return self._osascript(f'tell application "{app}" to return (player state as string)', 15).strip().lower()
+
+    def _verify_playback(self, app: str, script: str) -> str:
+        try:
+            # Allow Apple Music time to update its state engine
+            time.sleep(2.0)
+            state = self._player_state(app)
+            
+            if state in ("playing", "fast forwarding", "rewinding"):
+                try:
+                    name = self._osascript(f'tell application "{app}" to return (name of current track)', 10)
+                except Exception:
+                    name = ""
+                return f"verified playing: {name or 'unknown track'}"
+
+            # Fallback: if state is paused/stopped, trigger play directly on playlist 1
+            if app.lower() == "music":
+                self._osascript('tell application "Music" to play track 1 of playlist 1', 15)
+                time.sleep(1.5)
+                if self._player_state(app) == "playing":
+                    return "verified playing: library track 1"
+
+            return f"playback status: {state}"
+        except Exception as e:
+            return f"playback verification skipped ({e})"
+    def _run_verify(self, verify_script: str, language: str) -> str:
+        out = self._osascript(verify_script, 20, language)
+        if not out.strip().lower().startswith(("ok", "true")):
+            raise NonRetryableError(f"Verification failed: {out or 'verify script returned nothing'}")
+        return out
+
+    # ---------------------------------------------------------------- entry point
+    def _execute_sync(self, payload: Dict[str, Any]) -> str:
+        script = payload.get("script")
+        if not script or not isinstance(script, str):
+            raise NonRetryableError("MacWorker payload requires a 'script' field containing AppleScript.")
+            
+        language = str(payload.get("language") or "AppleScript")
+        timeout = min(float(payload.get("timeout", self.SCRIPT_TIMEOUT)), 120.0)
+
+        # 1. Run the script first
+        try:
+            out = self._osascript(script, timeout, language)
+        except Exception as e:
+            raise RuntimeError(f"osascript execution failed: {str(e)}")
+
+        # 2. Check if the script reported its own result error
+        if isinstance(out, str) and out.startswith("Result:"):
+            raise NonRetryableError(out)
+
+        # 3. Post-execution verification for media playback
+        apps = self._apps_in(script)
+        notes: List[str] = []
+        for app in apps:
+            if app.lower() in self._MEDIA_APPS and self._wants_playback(script, app):
+                notes.append(self._verify_playback(app, script))
+                break
+
+        if payload.get("verify"):
+            notes.append(self._run_verify(str(payload["verify"]), language))
+
+        if notes:
+            out = f"{out} ({'; '.join(notes)})" if out else "; ".join(notes)
+
+        return f"Mac action succeeded. Output: {out or 'Done.'}"
     
  # Replace the CoderWorker class in app/ai/worker.py with this one.
 # Extra imports needed at the top of worker.py:  import uuid
@@ -607,3 +777,19 @@ class CoderWorker(BaseWorker):
             ]
 
         raise RuntimeError(f"Script still failing after {self.MAX_FIX_ROUNDS} rounds:\n{last_err}")
+    
+class SearchWorker(BaseWorker):
+    """Web lookups through Tavily. No browser, no captchas."""
+    name = "search"
+    max_retries = 2
+    payload_hint = '{"query": "specific search query", "max_results": 5}'
+
+    async def execute(self, payload: Dict[str, Any], context: Dict[str, Any]) -> str:
+        q = payload.get("query") or payload.get("task") or payload.get("goal") or payload.get("prompt")
+        if not q:
+            raise NonRetryableError("Search step needs a 'query'.")
+        from app.tools.search_tool import search_web
+        out = await asyncio.to_thread(search_web, q, int(payload.get("max_results", 5)))
+        if out.startswith("Web search failed"):
+            raise RuntimeError(out)
+        return out

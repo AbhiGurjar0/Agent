@@ -66,7 +66,7 @@ export function stepsFromToolCalls(calls: ToolCall[]): Step[] {
     title: pretty(c.name),
     description: typeof c.result === "string" ? c.result : undefined,
     status: c.status === "completed" ? "done" : c.status === "running" ? "running" : "failed",
-    durationMs: c.durationMs,
+    durationMs: c?.durationMs,
   }));
 }
 
@@ -78,48 +78,58 @@ function Check() {
   );
 }
 
+const RAISED_SM = "shadow-[4px_4px_9px_#c3cde0,-4px_-4px_9px_#ffffff]";
+const INSET_SM = "shadow-[inset_3px_3px_6px_#c3cde0,inset_-3px_-3px_6px_#ffffff]";
+
 export function Timeline({ steps }: { steps: Step[] }) {
   const running = steps.find((s) => s.status === "running");
+  const failed = steps.find((s) => s.status === "failed");
   const doneCount = steps.filter((s) => s.status === "done").length;
   const allDone = steps.length > 0 && steps.every((s) => s.status === "done");
   const pct = steps.length ? Math.round((doneCount / steps.length) * 100) : 0;
 
   return (
-    <div className="rounded-2xl border border-[#2a2c4a] bg-[#14152b] p-5 text-slate-200">
-      <p className="text-sm text-slate-400" aria-live="polite">
-        {steps.length === 0 ? "Getting ready…" : allDone ? `All ${steps.length} tasks complete` : running ? `Task ${doneCount + 1} of ${steps.length}: ${running.title}` : "Working…"}
+    <div className="text-[#1c2a4a]">
+      <p className="text-sm text-[#7a88a6]" aria-live="polite">
+        {steps.length === 0 ? "Getting ready…"
+          : failed ? `Stopped at: ${failed.title}`
+          : allDone ? `All ${steps.length} tasks complete`
+          : running ? `Task ${doneCount + 1} of ${steps.length}: ${running.title}`
+          : "Working…"}
       </p>
-      <div className="mb-5 mt-3 h-1.5 overflow-hidden rounded-full bg-[#292e50]">
-        <div className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-emerald-300 transition-all duration-500" style={{ width: `${pct}%` }} />
+      <div className={`mb-5 mt-3 h-2.5 overflow-hidden rounded-full bg-[#e7edf6] ${INSET_SM}`}>
+        <div className="h-full rounded-full bg-gradient-to-r from-[#5b95ff] to-[#3a6fe0] transition-all duration-500" style={{ width: `${pct}%` }} />
       </div>
 
       <ol>
         {steps.map((s, i) => {
           const last = i === steps.length - 1;
           const marker =
-            s.status === "done" ? "border-emerald-300 bg-emerald-300 text-[#0f1020] shadow-[0_10px_20px_-8px_rgba(61,220,151,0.5)]"
-            : s.status === "failed" ? "border-rose-300 bg-rose-300 text-[#0f1020]"
-            : s.status === "running" ? "scale-105 border-indigo-300 bg-indigo-300 text-[#0f1020] ring-4 ring-indigo-300/20"
-            : "border-[#292e50] bg-[#171b35] text-slate-400";
+            s.status === "done" ? "bg-emerald-500 text-white"
+            : s.status === "failed" ? "bg-rose-500 text-white"
+            : s.status === "running" ? "bg-gradient-to-br from-[#5b95ff] to-[#3a6fe0] text-white"
+            : `bg-[#e7edf6] text-[#7a88a6] ${INSET_SM}`;
           return (
             <li key={s.id} className="grid grid-cols-[44px_1fr] gap-4">
               <div className="flex flex-col items-center">
-                <div className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-full border-2 font-semibold transition-all duration-300 ${marker}`}>
-                  {s.status === "running" && <span className="absolute -inset-2 animate-spin rounded-full border-2 border-transparent border-r-indigo-300/50 border-t-indigo-300" />}
+                <div className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-full font-semibold transition-all duration-300 ${marker}`}>
+                  {s.status === "running" && <span className="absolute -inset-1.5 animate-spin rounded-full border-2 border-transparent border-t-[#3a6fe0]" />}
                   {s.status === "done" ? <Check /> : s.status === "failed" ? "!" : i + 1}
                 </div>
-                {!last && <div className={`my-2 min-h-7 w-0.5 flex-1 rounded ${s.status === "done" ? "bg-gradient-to-b from-indigo-300 to-emerald-300" : "bg-[#292e50]"}`} />}
+                {!last && <div className={`my-2 min-h-7 w-1 flex-1 rounded ${s.status === "done" ? "bg-emerald-400" : "bg-[#c3cde0]"}`} />}
               </div>
-              <div className={`mb-4 rounded-2xl border bg-[#171b35] p-4 transition-all duration-300 ${s.status === "running" ? "translate-x-1 border-indigo-300/50" : "border-[#292e50]"} ${s.status === "waiting" ? "opacity-50" : ""}`}>
-                <h3 className="font-semibold text-white">{s.title}</h3>
-                {s.description && <p className="mt-1 line-clamp-3 text-sm text-slate-400">{s.description}</p>}
+              <div className={`mb-4 rounded-2xl bg-[#e7edf6] p-4 transition-all duration-300 ${RAISED_SM} ${s.status === "waiting" ? "opacity-50" : ""}`}>
+                <h3 className="font-semibold">{s.title}</h3>
+                {s.description && <p className="mt-1 line-clamp-3 text-sm text-[#7a88a6]">{s.description}</p>}
                 {s.logs && s.logs.length > 0 && (
-                  <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-black/40 p-2 font-mono text-xs text-slate-400">{s.logs.slice(-6).join("\n")}</pre>
+                  <pre className={`mt-3 max-h-32 overflow-auto whitespace-pre-wrap rounded-xl bg-[#e7edf6] p-2 font-mono text-xs text-[#3b4a6b] ${INSET_SM}`}>
+                    {s.logs.slice(-6).join("\n")}
+                  </pre>
                 )}
-                <span className={`mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${
-                  s.status === "done" ? "bg-emerald-400/10 text-emerald-300"
-                  : s.status === "failed" ? "bg-rose-400/10 text-rose-300"
-                  : s.status === "running" ? "bg-indigo-300/15 text-indigo-300" : "bg-[#292e50] text-slate-400"}`}>
+                <span className={`mt-3 inline-flex items-center gap-2 rounded-full bg-[#e7edf6] px-3 py-1 text-xs font-bold ${INSET_SM} ${
+                  s.status === "done" ? "text-emerald-600"
+                  : s.status === "failed" ? "text-rose-600"
+                  : s.status === "running" ? "text-[#3a6fe0]" : "text-[#7a88a6]"}`}>
                   {s.status === "running" && <i className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />}
                   {s.status === "waiting" ? "Waiting" : s.status === "running" ? "In progress" : s.status === "failed" ? "Failed"
                     : s.durationMs != null ? `Done in ${(s.durationMs / 1000).toFixed(1)}s` : "Done"}
@@ -131,7 +141,7 @@ export function Timeline({ steps }: { steps: Step[] }) {
       </ol>
 
       {allDone && (
-        <div className="ml-[60px] flex items-center gap-3 rounded-2xl border border-emerald-300/60 bg-emerald-400/10 px-5 py-3 font-semibold text-emerald-300">
+        <div className={`ml-[60px] flex items-center gap-3 rounded-2xl bg-[#e7edf6] px-5 py-3 font-semibold text-emerald-600 ${INSET_SM}`}>
           <Check /> All tasks complete.
         </div>
       )}

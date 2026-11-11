@@ -26,7 +26,7 @@ export default function TaskProgress() {
     }
 
     // 2. Fallback: whatever the database stored for that turn
-    getHistory(100)
+    getHistory()
       .then((all) => {
         const withTools = all.filter((m) => m.role === "assistant" && m.toolCalls.length > 0);
         const turn = chatId ? all.find((m) => m.id === chatId) : withTools.at(-1);

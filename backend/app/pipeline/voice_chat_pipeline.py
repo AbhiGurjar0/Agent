@@ -14,12 +14,7 @@ from app.ai.approval_manager import approval_manager
 SAFE_WORKSPACE = Path("./workspace").resolve()
 SAFE_WORKSPACE.mkdir(parents=True, exist_ok=True)
 
-
-async def handle_audio_ws_pipeline(
-    websocket: WebSocket,
-    db,
-    user_id: str = "6ac1156aa1165fa861cc5aa0",
-):
+async def handle_audio_ws_pipeline(websocket, db, user_id="6ac1156aa1165fa861cc5aa0", convo_id=None):
     await websocket.accept()
 
     task_queue = asyncio.Queue()
@@ -33,12 +28,8 @@ async def handle_audio_ws_pipeline(
     # 1. Spontaneous notification callback
     async def send_voice_notification(text_message: str):
         print(f"🔔 Background Notification Triggered: {text_message}")
-        tts_bytes = text_to_speech_bytes(text_message)
-        if tts_bytes:
-            await notification_queue.put({
-                "json": {"notification": text_message},
-                "bytes": tts_bytes
-            })
+        tts_bytes = await asyncio.to_thread(text_to_speech_bytes, text_message)
+        await notification_queue.put({"json": {"notification": text_message}, "bytes": tts_bytes})
 
     # =================================================================
     # 1. NON-BLOCKING AUDIO & TEXT LISTENER
@@ -48,6 +39,8 @@ async def handle_audio_ws_pipeline(
         try:
             while True:
                 message = await websocket.receive()
+                if message.get("type") == "websocket.disconnect":
+                    break
 
                 if "text" in message:
                     try:
@@ -100,7 +93,7 @@ async def handle_audio_ws_pipeline(
         latest_cancel_event = cancel_event
 
         try:
-            chat_payload = ChatCreate(type="user", message=prompt)
+            chat_payload = ChatCreate(type="user", message=prompt, convo_id=convo_id)
 
             agent_response = await run_chat_pipeline(
                 chat_data=chat_payload,
@@ -120,15 +113,12 @@ async def handle_audio_ws_pipeline(
                 else str(agent_response)
             )
 
-            tts_bytes = text_to_speech_bytes(response_text)
+            tts_bytes = await asyncio.to_thread(text_to_speech_bytes, response_text)  # also stops it blocking the event loop
 
-            if tts_bytes and not cancel_event.is_set():
+            if not cancel_event.is_set():
                 await main_response_queue.put({
-                    "json": {
-                        "transcribed_prompt": prompt,
-                        "response_text": response_text
-                    },
-                    "bytes": tts_bytes
+                    "json": {"transcribed_prompt": prompt, "response_text": response_text},
+                    "bytes": tts_bytes,   # may be None; send_loop already handles that
                 })
 
         except Exception as turn_err:
@@ -189,38 +179,52 @@ async def handle_audio_ws_pipeline(
     # =================================================================
     # 4. REDIS PUB/SUB LISTENER FOR CELERY NOTIFICATIONS
     # =================================================================
+ 
     async def redis_listener_loop():
-        redis_client = await aioredis.from_url("redis://localhost:6379/0", decode_responses=True)
-        pubsub = redis_client.pubsub()
-        channel_name = f"jarvis_notifications:{user_id}"
+        try:
+            redis_client = await aioredis.from_url("redis://localhost:6379/0", decode_responses=True)
+            await redis_client.ping()
+            pubsub = redis_client.pubsub()
+            channel_name = f"jarvis_notifications:{user_id}"
+            await pubsub.subscribe(channel_name)
+        except Exception as e:
+            print(f"⚠️ Redis unavailable, background notifications disabled: {e}")
+            return
 
-        await pubsub.subscribe(channel_name)
         print(f"📡 Subscribed to Redis channel: {channel_name}")
-
         try:
             async for message in pubsub.listen():
                 if message["type"] == "message":
                     try:
                         data = json.loads(message["data"])
-                        notification_msg = data.get("message")
-                        if notification_msg:
-                            await send_voice_notification(notification_msg)
+                        msg = data.get("message")
+                        if msg:
+                            await send_voice_notification(msg)
                     except json.JSONDecodeError:
                         pass
         except asyncio.CancelledError:
             pass
         finally:
-            await pubsub.unsubscribe(channel_name)
-            await redis_client.close()
+            try:
+                await pubsub.unsubscribe(channel_name)
+                await redis_client.close()
+            except Exception:
+                pass
 
+    # ---- run everything; stop it all when the client leaves ----
+    tasks = [
+        asyncio.create_task(f())
+        for f in (receive_loop, process_loop, send_loop, redis_listener_loop)
+    ]
     try:
-        await asyncio.gather(
-            receive_loop(),
-            process_loop(),
-            send_loop(),
-            redis_listener_loop()
-        )
-    except WebSocketDisconnect:
-        print("⚡ WebSocket client disconnected.")
+        # redis_listener_loop may return early (no Redis), so wait for receive_loop only
+        await tasks[0]
     except Exception as e:
         print(f"❌ WebSocket connection error: {e}")
+    finally:
+        for t in tasks:
+            t.cancel()
+        for t in list(active_background_tasks):
+            t.cancel()
+        if latest_cancel_event:
+            latest_cancel_event.set()

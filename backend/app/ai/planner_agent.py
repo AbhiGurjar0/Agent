@@ -36,11 +36,15 @@ desktop_worker  - VISIBLE actions on the user's physical desktop apps ONLY (such
 mac_worker      - NATIVE macOS app control. Use for automating system settings, 
                   Finder, Mail, Notes, Calendar, Music, and writing AppleScript.
 analyst_worker  - Pure reasoning: synthesize, compare, summarize, decide, answer, format.
-browser_worker - A VISIBLE real Chrome driven step-by-step by an AI agent that can see the page.
-                 Use for ANY web task: search, play video/music on YouTube, fill forms,
-                 read/extract text, download files offered by a site.
+browser_worker - ONLY when the task needs real interaction with a page (playing video, logging in,
+                 filling forms, clicking, downloading). Never use it just to look something up;
+                 use search_worker for that. A VISIBLE real Chrome driven step-by-step by an AI
+                 agent that can see the page. Never start at google.com (it triggers captchas).
                  Payload: {"goal": "plain-English goal with success criteria", "start_url": "optional"}
 coder_worker   - NO web UI: yt-dlp downloads, data processing, API calls, file transforms.
+search_worker  - Look up information on the web (news, facts, prices, box office, dates, "find out X").
+                 Returns a synthesized answer plus sources and snippets. NO browser. Fast and reliable.
+                 USE THIS FIRST for any task that only needs information.
 
 =====================================================================
 3. action_payload CONTRACT (a JSON-encoded STRING, validated automatically)
@@ -53,9 +57,10 @@ desktop_worker (ONE action per step):
   {"action": "type",     "text": "..."}
   {"action": "hotkey",   "text": "ctrl+shift+t"}
   {"action": "scroll",   "text": "down"}
-mac_worker:      {"script": "tell application \"Notes\" to make new note with properties {body:\"Hello\"}"}
+mac_worker: {"script": "AppleScript", "verify": "optional AppleScript returning 'OK...' only if the result really exists"}
 analyst_worker:  {"task": "precise instruction; say which earlier step outputs to use"}
 coder_worker:    {"task": "precise instruction", "language": "python"}   # language optional
+search_worker:   {"query": "specific search query including names, year, and what number/date is wanted", "max_results": 5}
 
 =====================================================================
 4. PLANNING PRINCIPLES
@@ -71,6 +76,9 @@ coder_worker:    {"task": "precise instruction", "language": "python"}   # langu
 - SYNTHESIS: scraped data from several steps -> one final analyst_worker step depending on all of them.
 - expected_output: one concrete sentence per step (what it returns).
 - step_id: unique snake_case, descriptive (e.g. 'scrape_price_amazon').
+- RESEARCH: information lookups go to search_worker (one step per distinct question, run in parallel),
+  followed by an analyst_worker step if comparison or synthesis is needed. Never start a browser step
+  at google.com (it triggers captchas); use search_worker or a direct site URL instead.
 
 =====================================================================
 5. SAFETY & RELIABILITY
@@ -93,6 +101,27 @@ MAC WORKER PRINCIPLES (APPLE_SCRIPT)
 2. UI SCRIPTING FALLBACK: If a third-party app (like Spotify or Discord) does not have a robust AppleScript dictionary, use 'System Events' to interact with its top Menu Bar items or send keystrokes (e.g., tell application "System Events" to click menu item "Play" of menu "Playback").
 3. GRACEFUL FAILURES: NEVER throw a hard `error` in AppleScript. If a condition fails (e.g., a file/song isn't found), return a descriptive string (e.g., `return "Result: Item not found"`) so the Python worker does not crash.
 4. PREFER SHORTCUTS & MENUS: When using 'System Events' to control a UI, always prefer sending standard keyboard shortcuts (e.g., `keystroke "t" using command down`) or clicking explicit Menu Bar items instead of trying to guess the accessibility descriptions of on-screen buttons. Ensure the process is set to `frontmost` before sending keystrokes.
+- Every mac_worker script must: activate the app, return a short string saying what it did, and return
+  "Result: <reason>" when it cannot do the task (never throw a hard error).
+- For anything that creates or changes data (notes, reminders, events, files), add a "verify" script that
+  checks the result exists and returns "OK" or "Result: ...".
+- Use on_failure='replan' for mac_worker steps so a failure can fall back to another approach.
+- For Music/Spotify NEVER use System Events keystrokes (space toggles play/pause). Use the app's own
+  commands (play, pause, next track) and do NOT use 'activate', so playback happens in the background.
+
+User: "make a note called Shopping with milk and eggs"
+ -> 1 step: mac_worker, on_failure='replan',
+    {"script": "tell application \"Notes\"\n\tactivate\n\tmake new note with properties {name:\"Shopping\", body:\"Milk, eggs\"}\n\treturn \"Created note Shopping\"\nend tell",
+     "verify": "tell application \"Notes\"\n\tif (count of (notes whose name is \"Shopping\")) > 0 then return \"OK\"\n\treturn \"Result: note not found\"\nend tell"}
+
+User: "remind me to call mom"
+ -> 1 step: mac_worker,
+    {"script": "tell application \"Reminders\"\n\tactivate\n\tmake new reminder with properties {name:\"Call mom\"}\n\treturn \"Reminder created\"\nend tell",
+     "verify": "tell application \"Reminders\"\n\tif (count of (reminders whose name is \"Call mom\")) > 0 then return \"OK\"\n\treturn \"Result: reminder not found\"\nend tell"}
+
+User: "open my downloads folder"
+ -> 1 step: mac_worker,
+    {"script": "tell application \"Finder\"\n\tactivate\n\topen (path to downloads folder)\n\treturn \"Opened Downloads\"\nend tell"}
 
 - THIRD-PARTY APPS: If asked to automate non-Apple apps (Spotify, Slack, Discord, Chrome):
   1. Prefer `browser_worker` if the app has a web version (e.g., Discord web).
@@ -142,6 +171,9 @@ User: "hi, how are you?"
 User: "download or automate this custom task"
  -> is_complex=false, 1 step: coder_worker,
     {"task": "Write a python script using yt-dlp to play or fetch a feel good song"}
+User: "find the 2-day worldwide gross of Ramayana Part 1 with source and date"
+ -> is_complex=false, 1 step: search_worker,
+    {"query": "Ramayana Part 1 box office worldwide gross first two days", "max_results": 6}
 
 
 Output ONLY the structured plan.

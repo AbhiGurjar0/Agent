@@ -16,6 +16,7 @@ What's new:
   * failure policy per step ("abort" or "continue") + automatic skipping of dependents
   * optional `replanner` hook so a failed step can trigger a new plan (self-healing at DAG level)
   * optional progress notifications, telemetry (duration, worker type) on every step
+  * optional `emitter` (ProgressEmitter) -> live step / agent / message events for the SSE stream
 """
 import asyncio
 import inspect
@@ -28,20 +29,39 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from app.schemas.planner_schema import ExecutionPlan, PlanStep, WorkerType
 from app.ai.browser_agent import BrowserAgentWorker
 from app.ai.worker import (
-    
     AnalystWorker,
     APIWorker,
     BrowserWorker,
     DesktopWorker,
     FileWorker,
     MacWorker,
-    CoderWorker
+    CoderWorker,
+    SearchWorker
 )
+from app.services.progress import agent_for
 
 _TEMPLATE_RE = re.compile(r"\{\{\s*([A-Za-z0-9_\-]+)(?:\.([A-Za-z0-9_\.\-]+))?\s*\}\}")
 
 # async def replanner(plan, failed_step_id, error, completed_outputs) -> Optional[ExecutionPlan]
 Replanner = Callable[[ExecutionPlan, str, str, Dict[str, Any]], Awaitable[Optional[ExecutionPlan]]]
+
+
+def _short(value: Any, limit: int = 240) -> str:
+    """One-line preview of a step output for the UI."""
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, default=str, ensure_ascii=False)
+    except Exception:
+        text = str(value)
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _desc(step: PlanStep) -> str:
+    return getattr(step, "description", None) or step.step_id
+
+
+def _plan_steps_payload(steps: List[PlanStep]) -> List[Dict[str, str]]:
+    return [{"id": s.step_id, "label": _desc(s), "agent": agent_for(s.worker_type)} for s in steps]
 
 
 class PlanValidationError(ValueError):
@@ -80,15 +100,15 @@ class DAGOrchestrator:
             WorkerType.MAC_OS:  MacWorker(),
             WorkerType.CODER: CoderWorker(),
         }
-        
+
         # Optional new workers: only registered if you added them to WorkerType.
-        for attr, cls in (("API", APIWorker), ("FILE", FileWorker)):
+        for attr, cls in (("API", APIWorker), ("FILE", FileWorker), ("SEARCH", SearchWorker)):
             wt = getattr(WorkerType, attr, None)
             if wt is not None:
                 self.worker_instances[wt] = cls()
 
         self.timeouts: Dict[Any, float] = {
-            WorkerType.BROWSER: 240.0, 
+            WorkerType.BROWSER: 240.0,
             WorkerType.DESKTOP_GUI: 90.0,
             WorkerType.ANALYST: 120.0,
             WorkerType.CODER: 200.0,
@@ -115,6 +135,16 @@ class DAGOrchestrator:
                 await res
         except Exception as e:  # a broken callback must never kill a plan
             print(f"⚠️ [Dispatcher] notify_callback failed: {e}")
+
+    @staticmethod
+    def _emit(emitter, etype: str, **fields):
+        """Progress events are best-effort: they must never break execution."""
+        if emitter is None:
+            return
+        try:
+            emitter.emit(etype, **fields)
+        except Exception as e:
+            print(f"⚠️ [Dispatcher] emit failed: {e}")
 
     @staticmethod
     def _template_refs(step: PlanStep) -> Set[str]:
@@ -195,8 +225,76 @@ class DAGOrchestrator:
             raise PlanValidationError(f"Dependency cycle detected involving: {stuck}")
         return deps
 
+    # ------------------------------------------------------------------ progress events
+    def _emit_result(
+        self,
+        emitter,
+        step: PlanStep,
+        res: Dict[str, Any],
+        pending: Dict[str, PlanStep],
+        deps: Dict[str, Set[str]],
+        in_progress: Set[str],
+    ):
+        """Events for a finished step: step.finished/failed, the hand-off message, agent status."""
+        if emitter is None:
+            return
+        sid = step.step_id
+        agent = agent_for(step.worker_type)
+        still_busy = any(
+            agent_for(pending[p].worker_type) == agent for p in in_progress if p in pending
+        )
+
+        if res["status"] == "success":
+            self._emit(emitter, "step.finished", step_id=sid, agent=agent, duration_s=res["duration_s"])
+            targets: List[str] = []
+            for other_id, other in pending.items():
+                if sid in deps.get(other_id, ()):
+                    t = agent_for(other.worker_type)
+                    if t not in targets:
+                        targets.append(t)
+            if not targets:
+                targets = ["planner"]
+            summary = _short(res["output"])
+            for t in targets:
+                if t == agent:
+                    t = "planner"
+                if t == agent:  # the planner itself: nobody to hand over to
+                    continue
+                self._emit(
+                    emitter, "agent.message",
+                    **{"from": agent, "to": t, "text": summary, "level": "success",
+                       "log": f"{agent.title()} finished {sid}"},
+                )
+            self._emit(
+                emitter, "agent.status", agent=agent,
+                status="Working" if still_busy else "Done",
+                doing=_desc(step) if still_busy else "Step complete",
+            )
+        else:
+            err = _short(res["output"])
+            self._emit(emitter, "step.failed", step_id=sid, agent=agent, error=err)
+            if agent != "planner":
+                self._emit(
+                    emitter, "agent.message",
+                    **{"from": agent, "to": "planner", "text": err, "level": "error",
+                       "log": f"{agent.title()} failed {sid}"},
+                )
+            else:
+                self._emit(emitter, "log", agent="planner", level="error", text=f"{sid} failed: {err}")
+            self._emit(
+                emitter, "agent.status", agent=agent,
+                status="Working" if still_busy else "Idle",
+                doing=_desc(step) if still_busy else "Step failed",
+            )
+
     # ------------------------------------------------------------------ worker pool
-    async def _worker_node(self, worker_id: int, task_queue: asyncio.Queue, result_queue: asyncio.Queue):
+    async def _worker_node(
+        self,
+        worker_id: int,
+        task_queue: asyncio.Queue,
+        result_queue: asyncio.Queue,
+        emitter=None,
+    ):
         """Background worker: pulls tasks, enforces timeout + exclusivity, reports a result dict."""
         while True:
             step, context, goal = await task_queue.get()
@@ -205,6 +303,10 @@ class DAGOrchestrator:
             started = time.monotonic()
             status, output = "success", None
             timeout = getattr(step, "timeout_s", None) or self.timeouts.get(wtype, self.default_timeout)
+
+            agent = agent_for(wtype)
+            self._emit(emitter, "step.started", step_id=step.step_id, agent=agent, text=_desc(step))
+            self._emit(emitter, "agent.status", agent=agent, status="Working", doing=_desc(step))
 
             try:
                 specialized_worker = self.worker_instances.get(wtype)
@@ -249,6 +351,7 @@ class DAGOrchestrator:
         plan: ExecutionPlan,
         notify_callback=None,
         replanner: Optional[Replanner] = None,
+        emitter=None,
     ) -> Dict[str, Any]:
         """
         Master dispatcher. Validates the DAG, schedules ready steps onto the worker pool,
@@ -279,7 +382,7 @@ class DAGOrchestrator:
         task_queue: asyncio.Queue = asyncio.Queue()
         result_queue: asyncio.Queue = asyncio.Queue()
         workers = [
-            asyncio.create_task(self._worker_node(i, task_queue, result_queue))
+            asyncio.create_task(self._worker_node(i, task_queue, result_queue, emitter))
             for i in range(self.num_workers)
         ]
 
@@ -298,6 +401,9 @@ class DAGOrchestrator:
                             pending.pop(sid)
                             log.append({"step_id": sid, "status": "skipped", "result": skipped[sid]})
                             print(f"⏭️ [Dispatcher] Skipping '{sid}': {skipped[sid]}")
+                            self._emit(emitter, "step.skipped", step_id=sid, reason=skipped[sid])
+                            self._emit(emitter, "log", agent="planner", level="warn",
+                                       text=f"Skipped '{sid}': {skipped[sid]}")
                             changed = True
 
                 # B. Enqueue every step whose dependencies are fully met
@@ -332,6 +438,7 @@ class DAGOrchestrator:
                         "duration_s": res["duration_s"],
                     }
                 )
+                self._emit_result(emitter, step, res, pending, deps, in_progress)
 
                 if res["status"] == "success":
                     completed[sid] = res["output"]
@@ -354,23 +461,33 @@ class DAGOrchestrator:
                                 deps.pop(old, None)
                                 skipped[old] = "superseded by replan"
                                 log.append({"step_id": old, "status": "skipped", "result": skipped[old]})
+                                self._emit(emitter, "step.skipped", step_id=old, reason=skipped[old])
                             for s in new_plan.steps:
                                 pending[s.step_id] = s
                                 deps[s.step_id] = new_deps[s.step_id]
                             print(f"🧭 [Dispatcher] Replanned after '{sid}' failed ({len(new_plan.steps)} new steps).")
+                            self._emit(emitter, "plan.ready",
+                                       goal=getattr(new_plan, "high_level_goal", goal) or goal,
+                                       steps=_plan_steps_payload(list(new_plan.steps)))
+                            self._emit(emitter, "log", agent="planner", level="warn",
+                                       text=f"'{sid}' failed, so the plan was adjusted.")
                             await self._notify(notify_callback, "A step failed, so I'm adjusting the plan.")
                             continue
                     except Exception as e:
                         print(f"⚠️ [Dispatcher] Replan failed: {e}")
 
-                policy = getattr(step, "on_failure", None) or ("abort" if self.fail_fast else "continue")
+                raw_policy = getattr(step, "on_failure", None)
+                policy = str(getattr(raw_policy, "value", raw_policy) or "").lower()
+                if policy == "skip":
+                    policy = "continue"
+                elif policy != "continue":      # "abort", "replan" with no replan left, or missing
+                    policy = "abort"
+                    
                 if policy == "abort":
                     raise PlanExecutionError(
-                        f"Plan execution failed at '{sid}': {failed[sid]}",
-                        step_id=sid,
-                        partial=completed,
+                        f"Step '{sid}' failed: {failed[sid]}", step_id=sid, partial=completed
                     )
-                print(f"↪️ [Dispatcher] '{sid}' failed but policy is 'continue'.")
+                print(f"↪️ [Dispatcher] '{sid}' failed; policy is '{policy}', continuing.")
 
             print("🎉 [Dispatcher] DAG finished.")
 
@@ -384,14 +501,18 @@ class DAGOrchestrator:
                         f"\n\nNote: some steps did not complete. Failed: {failed}. Skipped: {skipped}. "
                         "Clearly say what could not be done."
                     )
+                self._emit(emitter, "agent.status", agent="analyst", status="Working",
+                           doing="Writing the final summary")
                 try:
                     final_summary = await self.worker_instances[WorkerType.ANALYST].execute_with_adaptation(
                         payload={"prompt": prompt, "_meta": {"goal": goal}},
                         context=completed,
                     )
+                    self._emit(emitter, "agent.status", agent="analyst", status="Done", doing="Summary written")
                 except Exception as e:
                     summary_error = str(e)
                     print(f"⚠️ [Dispatcher] Synthesis failed: {e}")
+                    self._emit(emitter, "log", agent="analyst", level="error", text=f"Summary failed: {e}")
 
             if not failed and not skipped:
                 status = "success"

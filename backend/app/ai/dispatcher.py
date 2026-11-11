@@ -226,8 +226,11 @@ async def execute_agent_tool(
         return {"status": "success", "output": output}
 
     elif tool_name == "search_web":
-        print(f"Step8: Executing web search for query: {arguments.get('query')}")
-        output = search_web(query=arguments.get("query"))
+        query = arguments.get("query")
+        print(f"Step8: Executing web search for query: {query}")
+        output = await asyncio.to_thread(
+            search_web, query=query, max_results=int(arguments.get("max_results") or 5)
+        )
         return {"status": "success", "results": output}
 
     elif tool_name == "take_screenshot":

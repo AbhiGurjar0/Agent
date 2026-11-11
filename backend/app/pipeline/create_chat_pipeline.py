@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import time
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -12,15 +13,23 @@ from app.ai.openai import call_model, get_text_embedding
 from app.ai.dispatcher import execute_agent_tool
 from app.services.context_builder import build_agent_context
 from app.services.tool_router import DynamicToolRouter
+from app.services.progress import agent_for
 from app.tools.tools import tools
 from app.ai.planner_agent import dag_planner
-from app.ai.dag_orchestrator import DAGOrchestrator
+from app.ai.dag_orchestrator import DAGOrchestrator,PlanExecutionError
 from app.schemas.planner_schema import (
     ExecutionPlan,
     FailurePolicy,
     TaskCategory,
     WorkerType,
 )
+from app.ai.direct_first import (
+    ESCALATE, ESCALATE_NAME, ESCALATE_TOOL, ROUTING_NOTE, select_direct_tools,
+)
+from app.ai.formatter import format_response
+from app.services.jobs.job_intake import classify_request, build_draft, draft_reply
+from app.services.jobs.job_engine import engine as job_engine
+
 
 logger = logging.getLogger("jarvis.agent")
 
@@ -57,6 +66,34 @@ tool_router = DynamicToolRouter(
 _background_tasks: set = set()
 
 
+HIRE_RE = re.compile(
+    r"\b(hire|hiring|freelancer|get someone to|find (me )?(an? )?(agent|editor|developer|designer|writer)|outsource)\b", re.I
+)
+
+
+MAX_IMAGES = 4
+MAX_IMAGE_CHARS = 3_000_000   # ~2.2 MB per image after base64
+
+def _get_images(chat_data: Any) -> List[str]:
+    raw = chat_data.get("images") if isinstance(chat_data, dict) else getattr(chat_data, "images", None)
+    out = []
+    for s in (raw or [])[:MAX_IMAGES]:
+        if isinstance(s, str) and s.startswith("data:image/") and len(s) <= MAX_IMAGE_CHARS:
+            out.append(s)
+    return out
+
+def _user_content(text: str, images: List[str]):
+    if not images:
+        return text
+    return [{"type": "text", "text": text}] + [
+        {"type": "image_url", "image_url": {"url": u}} for u in images
+    ]
+    
+def _looks_like_hire(message: str, history: List[Dict[str, Any]]) -> bool:
+    recent = " ".join(str(r["content"]) for r in history[-4:] if r["role"] == "user")
+    return bool(HIRE_RE.search(message) or HIRE_RE.search(recent))
+
+
 def _spawn(coro) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
@@ -68,6 +105,37 @@ class PipelineCancelled(Exception):
 
 
 # --------------------------------------------------------------------------- #
+# Progress events (all best-effort; `emitter` is None for plain POST /messages)
+# --------------------------------------------------------------------------- #
+def _em(emitter, etype: str, **fields) -> None:
+    if emitter is None:
+        return
+    try:
+        emitter.emit(etype, **fields)
+    except Exception as e:
+        logger.debug(f"[Pipeline] emit failed: {e}")
+
+
+def _emit_plan(emitter, plan: ExecutionPlan) -> None:
+    _em(
+        emitter, "plan.ready",
+        goal=plan.high_level_goal,
+        steps=[
+            {"id": s.step_id, "label": getattr(s, "description", None) or s.step_id,
+             "agent": agent_for(s.worker_type)}
+            for s in plan.steps
+        ],
+    )
+    _em(emitter, "agent.status", agent="planner", status="Working", doing="Coordinating the steps")
+
+
+def _convo_id(chat_data: Any) -> Optional[str]:
+    if isinstance(chat_data, dict):
+        return chat_data.get("convo_id")
+    return getattr(chat_data, "convo_id", None)
+
+
+# --------------------------------------------------------------------------- #
 # Main entry
 # --------------------------------------------------------------------------- #
 async def run_chat_pipeline(
@@ -76,6 +144,7 @@ async def run_chat_pipeline(
     current_user: dict,
     cancel_event: asyncio.Event = None,
     notify_callback=None,
+    emitter=None,
 ) -> Dict[str, Any]:
     """
     Autonomous agent pipeline:
@@ -95,6 +164,8 @@ async def run_chat_pipeline(
         user_id = DEFAULT_USER_ID
 
     assistant_chat_id = ObjectId()
+    cid = _convo_id(chat_data)
+    images = _get_images(chat_data)
 
     if isinstance(chat_data, dict):
         user_message = chat_data.get("message", "")
@@ -141,20 +212,21 @@ async def run_chat_pipeline(
     if pending:
         answer = user_message.lower().strip(" .!")
         if answer in CONFIRM_WORDS:
-            _spawn(_safe_db_insert(db["chats"], _user_doc(user_id, user_message, embedded_user_message)))
+            _spawn(_safe_db_insert(db["chats"], _user_doc(user_id, user_message, embedded_user_message, cid)))
             await _clear_pending_plan(db, user_id)
+            _emit_plan(emitter, pending["plan"])
             content, tasks = await _run_plan(
-                pending["plan"], pending["original_prompt"], notify_callback, cancel_event
+                pending["plan"], pending["original_prompt"], notify_callback, cancel_event, emitter
             )
             return _finish(db, assistant_chat_id, user_id, content, tasks, start_time,
-                           turns=1, planner_used=True,
+                           turns=1, planner_used=True, convo_id=cid,
                            extra={"confirmed_plan": True, "goal": pending["plan"].high_level_goal})
         if answer in DENY_WORDS:
-            _spawn(_safe_db_insert(db["chats"], _user_doc(user_id, user_message, embedded_user_message)))
+            _spawn(_safe_db_insert(db["chats"], _user_doc(user_id, user_message, embedded_user_message, cid)))
             await _clear_pending_plan(db, user_id)
             return _finish(db, assistant_chat_id, user_id,
                            "Okay, I cancelled that plan. Nothing was executed.",
-                           [], start_time, turns=0, planner_used=False)
+                           [], start_time, turns=0, planner_used=False, convo_id=cid)
         # Unrelated new message -> drop the stale pending plan and continue normally.
         await _clear_pending_plan(db, user_id)
 
@@ -170,16 +242,61 @@ async def run_chat_pipeline(
         system_context = "You are Jarvis, an autonomous desktop AI assistant."
 
     messages: List[Dict[str, Any]] = (
-        [{"role": "system", "content": system_context}]
-        + chat_history
-        + [{"role": "user", "content": user_message}]
-    )
+    [{"role": "system", "content": system_context}]
+    + chat_history
+    + [{"role": "user", "content": _user_content(user_message, images)}]
+)
 
-    _spawn(_safe_db_insert(db["chats"], _user_doc(user_id, user_message, embedded_user_message)))
+    _spawn(_safe_db_insert(db["chats"], _user_doc(user_id, user_message, embedded_user_message, cid, images)))
+    
+        # 0. Categorise: JOB (hire a freelancer) vs normal TASK -------------------- #
+    if user_message.lower().strip(" .!?") not in TRIVIAL_MESSAGES:
+        hist = _history_text(chat_history)
+        intent = None
+        for attempt in range(2):
+            try:
+                intent = await classify_request(user_message, hist)
+                break
+            except Exception as e:
+                logger.warning(f"[Pipeline] Job classifier attempt {attempt + 1} failed: {e}")
+                await asyncio.sleep(0.5)
+    
+        if intent is None and _looks_like_hire(user_message, chat_history):
+            # the classifier said "not a job" (or crashed) but this reads like a hire request: nudge it
+            try:
+                intent = await classify_request(f"Hire a freelancer for this job: {user_message}", hist)
+            except Exception as e:
+                logger.warning(f"[Pipeline] Hire retry failed: {e}")
+    
+        logger.info(f"[Pipeline] Job intent: {'job' if intent else 'none'}")
+        if intent is not None:
+            if intent.needs_clarification and intent.clarification_question:
+                return _finish(db, assistant_chat_id, user_id, intent.clarification_question, [], start_time,
+                               turns=0, planner_used=False, convo_id=cid,
+                               extra={"category": "job", "clarification": True})
+            doc = build_draft(user_id, intent.job, cid)
+            job = await job_engine.create_draft(db, doc)
+            _em(emitter, "log", agent="planner", level="success", text=f"Job draft created: {job['title']}")
+            return _finish(db, assistant_chat_id, user_id, draft_reply(job), [], start_time,
+                           turns=0, planner_used=False, convo_id=cid,
+                           extra={"category": "job", "job_id": job["id"], "open": f"/jobs?job={job['id']}&tab=ready"})
+    
+    if not images and user_message.lower().strip(" .!?") not in TRIVIAL_MESSAGES:
+        _em(emitter, "agent.status", agent="planner", status="Working", doing="Checking quick tools")
+        content, tasks, turns = await _react_loop(
+            list(messages), user_message, user_id, db, assistant_chat_id,
+            cancel_event, notify_callback, emitter, allow_escalation=True,
+        )
+        if content is not ESCALATE:
+            return _finish(db, assistant_chat_id, user_id, content, tasks, start_time,
+                           turns=turns, planner_used=False, convo_id=cid,
+                           extra={"route": "direct"})
+        logger.info("[Pipeline] No direct tool fits -> DAG planner")
 
     # 5. Planner triage ------------------------------------------------------ #
     plan: Optional[ExecutionPlan] = None
-    if user_message.lower().strip(" .!?") not in TRIVIAL_MESSAGES:
+    if not images and user_message.lower().strip(" .!?") not in TRIVIAL_MESSAGES:
+        _em(emitter, "agent.status", agent="planner", status="Working", doing="Planning the task")
         try:
             plan = await asyncio.wait_for(
                 dag_planner.generate_plan(user_message, context=_history_text(chat_history)),
@@ -187,12 +304,14 @@ async def run_chat_pipeline(
             )
         except Exception as plan_err:
             logger.error(f"[Pipeline] Planner failed, falling back to ReAct: {plan_err}")
+            _em(emitter, "log", agent="planner", level="warn",
+                text="Planner failed, answering directly instead.")
 
     if plan is not None:
         # 5a. Needs more info from the user
         if plan.needs_clarification:
             return _finish(db, assistant_chat_id, user_id, plan.clarification_question,
-                           [], start_time, turns=0, planner_used=True,
+                           [], start_time, turns=0, planner_used=True, convo_id=cid,
                            extra={"clarification": True})
 
         # 5b. Real multi-agent / tool work
@@ -205,21 +324,24 @@ async def run_chat_pipeline(
                     db, assistant_chat_id, user_id,
                     "This plan includes sensitive actions:\n"
                     f"{lines}\n\nReply **yes** to proceed or **no** to cancel.",
-                    [], start_time, turns=0, planner_used=True,
+                    [], start_time, turns=0, planner_used=True, convo_id=cid,
                     extra={"awaiting_confirmation": True, "goal": plan.high_level_goal},
                 )
 
-            content, tasks = await _run_plan(plan, user_message, notify_callback, cancel_event)
+            _emit_plan(emitter, plan)
+            content, tasks = await _run_plan(plan, user_message, notify_callback, cancel_event, emitter)
             return _finish(db, assistant_chat_id, user_id, content, tasks, start_time,
-                           turns=1, planner_used=True,
+                           turns=1, planner_used=True, convo_id=cid,
                            extra={"goal": plan.high_level_goal, "steps": len(plan.steps)})
 
     # 6. ReAct loop (conversation, simple Q&A, or planner fallback) ---------- #
+    _em(emitter, "agent.status", agent="planner", status="Working", doing="Handling your request")
     final_content, all_executed_tasks, turns_used = await _react_loop(
-        messages, user_message, user_id, db, assistant_chat_id, cancel_event, notify_callback
+        messages, user_message, user_id, db, assistant_chat_id, cancel_event, notify_callback, emitter
     )
     return _finish(db, assistant_chat_id, user_id, final_content, all_executed_tasks,
-                   start_time, turns=turns_used, planner_used=False)
+                   start_time, turns=turns_used, planner_used=False, convo_id=cid)
+  
 
 
 # --------------------------------------------------------------------------- #
@@ -242,14 +364,15 @@ def _history_text(chat_history: List[Dict[str, Any]], n: int = 6, max_chars: int
     return "\n".join(f"{r['role']}: {str(r['content'])[:max_chars]}" for r in rows)
 
 
-def _user_doc(user_id: str, message: str, embedding: list) -> dict:
-    return {
-        "user_id": user_id,
-        "role": "user",
-        "content": message,
-        "embeddings": embedding,
+def _user_doc(user_id, message, embedding, convo_id=None, images=None) -> dict:
+    doc = {
+        "user_id": user_id, "convo_id": convo_id, "title": message[:60],
+        "role": "user", "content": message, "embeddings": embedding,
         "created_at": datetime.now(timezone.utc),
     }
+    if images:
+        doc["images"] = images
+    return doc
 
 
 # --------------------------------------------------------------------------- #
@@ -282,6 +405,11 @@ async def _run_with_cancel(coro, cancel_event: Optional[asyncio.Event], timeout:
 def _format_result(result: Any) -> str:
     if not isinstance(result, dict):
         return str(result)
+    failed = result.get("failed")
+    if failed and result.get("status") in ("failed", "partial"):
+        errs = "\n".join(f"- {sid}: {str(err)[:400]}" for sid, err in failed.items())
+        body = str(result["summary"]) if result.get("summary") else ""
+        return (body + "\n\n" if body else "") + "Some steps did not complete:\n" + errs
     if result.get("summary"):
         return str(result["summary"])
     raw = result.get("raw_outputs")
@@ -300,16 +428,26 @@ async def _run_plan(
     original_prompt: str,
     notify_callback,
     cancel_event: Optional[asyncio.Event],
+    emitter=None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
     """Execute a plan; on a failed step whose policy is 'replan', try once more
     with a recovery plan. Returns (final_text, executed_steps)."""
     replans = 0
     result: Any = {}
+
+    async def _replanner(_plan, failed_id, error, completed):      # <- ADD
+        return await dag_planner.replan(original_prompt, failed_id, error, completed)
+
     while True:
         try:
             logger.info(f"[Pipeline] Executing plan: {plan.high_level_goal}")
             result = await _run_with_cancel(
-                orchestrator.execute_plan(plan, notify_callback=notify_callback),
+                orchestrator.execute_plan(
+                    plan,
+                    notify_callback=notify_callback,
+                    replanner=_replanner,                           
+                    emitter=emitter,
+                ),
                 cancel_event,
                 PLAN_EXECUTION_TIMEOUT_S,
             )
@@ -317,8 +455,12 @@ async def _run_plan(
             return "Task cancelled by user.", []
         except asyncio.TimeoutError:
             return f"The task took longer than {int(PLAN_EXECUTION_TIMEOUT_S)}s and was stopped.", []
+        except PlanExecutionError as exc:
+            _em(emitter, "log", agent="planner", level="error", text=str(exc))
+            return f"I couldn't finish that: {exc}", []
         except Exception as exc:
             logger.exception("[Pipeline] Orchestrator crashed")
+            _em(emitter, "log", agent="planner", level="error", text=f"Plan failed: {exc}")
             return f"Failed to execute plan: {exc}", []
 
         # Recovery requires the orchestrator to report which step failed
@@ -336,6 +478,8 @@ async def _run_plan(
         completed = {k: str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
         try:
             logger.warning(f"[Pipeline] Step '{failed_id}' failed, replanning...")
+            _em(emitter, "log", agent="planner", level="warn",
+                text=f"Step '{failed_id}' failed, replanning.")
             plan = await asyncio.wait_for(
                 dag_planner.replan(original_prompt, failed_id, str(result.get("error", "unknown error")), completed),
                 timeout=PLANNER_TIMEOUT_S,
@@ -345,6 +489,7 @@ async def _run_plan(
             break
         if plan.needs_clarification:
             return plan.clarification_question, []
+        _emit_plan(emitter, plan)
         replans += 1
 
     tasks = result.get("steps_executed", []) if isinstance(result, dict) else []
@@ -362,13 +507,22 @@ async def _react_loop(
     assistant_chat_id: ObjectId,
     cancel_event: Optional[asyncio.Event],
     notify_callback,
+    emitter=None,
+    allow_escalation: bool = False
 ) -> Tuple[str, List[Dict[str, Any]], int]:
     all_executed_tasks: List[Dict[str, Any]] = []
     final_content = "Reached maximum step limit during execution."
     turns_used = 0
 
     # Route tools off the user's actual request, not the last tool-result JSON.
-    filtered_tools = tool_router.select_tools(user_message, top_k=6)
+    if allow_escalation:
+        direct = select_direct_tools(tool_router, user_message)
+        if not direct:                       # nothing fits -> straight to planner, no LLM call wasted
+            return ESCALATE, [], 0
+        filtered_tools = direct + [ESCALATE_TOOL]
+        messages.insert(1, {"role": "system", "content": ROUTING_NOTE})
+    else:
+        filtered_tools = tool_router.select_tools(user_message, top_k=6)
 
     for turn in range(MAX_TOOL_TURNS):
         turns_used = turn + 1
@@ -386,6 +540,13 @@ async def _react_loop(
                     all_executed_tasks, turns_used)
 
         response_message = response.choices[0].message
+        if allow_escalation:
+            calls = response_message.tool_calls or []
+            if any(tc.function.name == ESCALATE_NAME for tc in calls):
+                if not all_executed_tasks:   # nothing ran yet -> hand off cleanly
+                    return ESCALATE, [], turns_used
+                # tools already ran: drop the escalate call and let the model finish
+                response_message.tool_calls = [tc for tc in calls if tc.function.name != ESCALATE_NAME] or None
         assistant_dict: Dict[str, Any] = {
             "role": "assistant",
             "content": response_message.content or "",
@@ -402,6 +563,7 @@ async def _react_loop(
         messages.append(assistant_dict)
 
         if not response_message.tool_calls:
+            _em(emitter, "agent.status", agent="builder", status="Done", doing="Finished")
             return response_message.content or "Task completed.", all_executed_tasks, turns_used
 
         async def _run_single_tool(tool_call):
@@ -412,6 +574,10 @@ async def _react_loop(
                 fn_args = json.loads(tool_call.function.arguments or "{}")
             except Exception as parse_err:
                 return tool_id, fn_name, {"status": "error", "error": f"Invalid JSON args: {parse_err}"}
+
+            _em(emitter, "agent.status", agent="builder", status="Working", doing=f"Running {fn_name}")
+            _em(emitter, "log", agent="builder", level="info", text=f"{fn_name} started")
+            t_tool = time.perf_counter()
             try:
                 result = await asyncio.wait_for(
                     execute_agent_tool(
@@ -424,10 +590,15 @@ async def _react_loop(
                     ),
                     timeout=TOOL_TIMEOUT_S,
                 )
+                _em(emitter, "log", agent="builder", level="success",
+                    text=f"{fn_name} finished in {time.perf_counter() - t_tool:.1f}s")
                 return tool_id, fn_name, result
             except asyncio.TimeoutError:
+                _em(emitter, "log", agent="builder", level="error",
+                    text=f"{fn_name} timed out after {int(TOOL_TIMEOUT_S)}s")
                 return tool_id, fn_name, {"status": "error", "error": f"Tool '{fn_name}' timed out after {int(TOOL_TIMEOUT_S)}s."}
             except Exception as tool_err:
+                _em(emitter, "log", agent="builder", level="error", text=f"{fn_name} failed: {tool_err}")
                 return tool_id, fn_name, {"status": "error", "error": str(tool_err)}
 
         tool_results = await asyncio.gather(*[_run_single_tool(tc) for tc in response_message.tool_calls])
@@ -506,9 +677,11 @@ def _finish(
     turns: int,
     planner_used: bool,
     extra: Optional[Dict[str, Any]] = None,
+    convo_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    content = format_response(content) 
     execution_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
-    _spawn(_save_assistant_response(db, chat_id, user_id, content, tasks, execution_time_ms))
+    _spawn(_save_assistant_response(db, chat_id, user_id, content, tasks, execution_time_ms, convo_id))
     meta = {
         "execution_time_ms": execution_time_ms,
         "turns_used": turns,
@@ -529,7 +702,10 @@ async def _call_model_with_retry(user_id: str, messages: list, tools: list, max_
             await asyncio.sleep(0.5 * (2 ** attempt))
 
 
-async def _save_assistant_response(db, chat_id: ObjectId, user_id: str, content: str, tasks: list, execution_time_ms: float):
+async def _save_assistant_response(
+    db, chat_id: ObjectId, user_id: str, content: str, tasks: list,
+    execution_time_ms: float, convo_id: Optional[str] = None,
+):
     try:
         try:
             embedding = await get_text_embedding(content)
@@ -540,6 +716,7 @@ async def _save_assistant_response(db, chat_id: ObjectId, user_id: str, content:
             {"_id": chat_id},
             {"$set": {
                 "user_id": user_id,
+                "convo_id": convo_id,
                 "role": "assistant",
                 "content": content,
                 "embeddings": embedding,

@@ -37,6 +37,8 @@ class ChatThreadInDB(BaseModel):
     user_id: str
     type: str = "general_chat"
     messages: List[ChatMessage] = Field(default_factory=list)
+    convo_id:str
+    title: Optional[str] = None
     
     # 3. FIXED: Embeddings are returned as arrays of floats, not strings
     embeddings: Optional[List[float]] = None

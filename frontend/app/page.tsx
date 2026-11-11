@@ -1,6 +1,7 @@
 "use client"
-import Home from "../component/Home";
+import Dashboard from "@/component/Dashboard";
+
 
 export default function Page() {
-  return <Home />;
+  return <Dashboard />;
 }

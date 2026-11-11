@@ -40,6 +40,31 @@ tools = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_web",
+            "description": (
+                "Look up current facts, news, prices, box-office numbers, scores, release dates or any "
+                "question that needs live web information. Returns a synthesized answer with sources. "
+                "ALWAYS prefer this over browsing when you only need information."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Specific search query.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "1-8, default 5.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
     # =====================================================================
     # 2. TASKS & REMINDERS TOOLS
     # =====================================================================
@@ -257,43 +282,49 @@ tools = [
             },
         },
     },
-    {"type": "function",
-    "function": {
-        "name": "native_macos_action",
-        "description": "Fast-path (50ms) native execution for macOS desktop apps. Clicks buttons by label, triggers top menu bar items, or inspects UI elements without taking screenshots.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "action_type": {
-                    "type": "string",
-                    "enum": ["click_element", "select_menu", "type_text", "inspect_ui"],
-                    "description": "Type of native macOS UI interaction."
+    {
+        "type": "function",
+        "function": {
+            "name": "native_macos_action",
+            "description": "Fast-path (50ms) native execution for macOS desktop apps. Clicks buttons by label, triggers top menu bar items, or inspects UI elements without taking screenshots.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action_type": {
+                        "type": "string",
+                        "enum": [
+                            "click_element",
+                            "select_menu",
+                            "type_text",
+                            "inspect_ui",
+                        ],
+                        "description": "Type of native macOS UI interaction.",
+                    },
+                    "app_name": {
+                        "type": "string",
+                        "description": "Name of the target macOS application (e.g., 'Finder', 'Slack', 'Xcode', 'System Settings').",
+                    },
+                    "element_type": {
+                        "type": "string",
+                        "description": "UI element class (e.g., 'button', 'checkbox', 'text field', 'pop up button'). Required for 'click_element'.",
+                    },
+                    "target_label": {
+                        "type": "string",
+                        "description": "Exact text label of the button or menu item to click (e.g., 'Save', 'Run', 'General').",
+                    },
+                    "menu_name": {
+                        "type": "string",
+                        "description": "Top menu name (e.g., 'File', 'Edit', 'Product'). Required for 'select_menu'.",
+                    },
+                    "text_to_type": {
+                        "type": "string",
+                        "description": "Text content to send. Required for 'type_text'.",
+                    },
                 },
-                "app_name": {
-                    "type": "string",
-                    "description": "Name of the target macOS application (e.g., 'Finder', 'Slack', 'Xcode', 'System Settings')."
-                },
-                "element_type": {
-                    "type": "string",
-                    "description": "UI element class (e.g., 'button', 'checkbox', 'text field', 'pop up button'). Required for 'click_element'."
-                },
-                "target_label": {
-                    "type": "string",
-                    "description": "Exact text label of the button or menu item to click (e.g., 'Save', 'Run', 'General')."
-                },
-                "menu_name": {
-                    "type": "string",
-                    "description": "Top menu name (e.g., 'File', 'Edit', 'Product'). Required for 'select_menu'."
-                },
-                "text_to_type": {
-                    "type": "string",
-                    "description": "Text content to send. Required for 'type_text'."
-                }
+                "required": ["action_type", "app_name"],
             },
-            "required": ["action_type", "app_name"]
-        }
-    }
-},
+        },
+    },
     ## for External Search
     {
         "type": "function",
@@ -313,22 +344,22 @@ tools = [
         },
     },
     {
-    "type": "function",
-    "function": {
-        "name": "synthesize_new_tool",
-        "description": "Writes, tests, and registers a new Python tool script on the fly when no existing tool can accomplish a task.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "tool_requirement": {
-                    "type": "string",
-                    "description": "Detailed specification of what the new tool should do (e.g. 'Fetch weather forecast using Open-Meteo API without an API key')."
-                }
+        "type": "function",
+        "function": {
+            "name": "synthesize_new_tool",
+            "description": "Writes, tests, and registers a new Python tool script on the fly when no existing tool can accomplish a task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_requirement": {
+                        "type": "string",
+                        "description": "Detailed specification of what the new tool should do (e.g. 'Fetch weather forecast using Open-Meteo API without an API key').",
+                    }
+                },
+                "required": ["tool_requirement"],
             },
-            "required": ["tool_requirement"]
-        }
-    }
-},
+        },
+    },
     # =====================================================================
     # 6. DESKTOP GUI & VISION TOOLS
     # =====================================================================
@@ -525,6 +556,23 @@ tools = [
                     }
                 },
                 "required": ["actions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "pay_freelancer",
+            "description": "Pay a freelancer for completed work via PayPal.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "freelancer_id": {"type": "string"},
+                    "amount": {"type": "number", "description": "USD"},
+                    "job_id": {"type": "string"},
+                    "note": {"type": "string"},
+                },
+                "required": ["freelancer_id", "amount", "job_id"],
             },
         },
     },
