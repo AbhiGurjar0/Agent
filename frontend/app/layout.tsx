@@ -9,11 +9,6 @@ const plusJakartaSans = Plus_Jakarta_Sans({
   weight: ["500", "600", "700"],
 });
 
-const sora = Sora({
-  variable: "--font-sora",
-  subsets: ["latin"],
-  weight: ["600", "700"],
-});
 
 export const metadata: Metadata = {
   title: "Asur AI",
@@ -28,7 +23,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${plusJakartaSans.variable} ${sora.variable} h-full antialiased`}
+      className={`${plusJakartaSans.variable}  h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-[#FAFAFC] text-[#14123a] selection:bg-[#8b7bff]/20">
   <AuthGate>{children}</AuthGate>
