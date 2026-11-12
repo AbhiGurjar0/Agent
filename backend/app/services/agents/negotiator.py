@@ -13,16 +13,19 @@ import random
 import re
 from typing import Any, Dict, List, Optional
 
+from app.ai.config import config
+# NOTE: change this import to the module where get_async_openai_client() lives
+from app.ai.openai import get_async_openai_client
+
 log = logging.getLogger("jarvis.negotiator")
 
-MODEL = os.getenv("NEGOTIATOR_MODEL", "claude-sonnet-5-5")
+# On Azure this is the *deployment name*. Falls back to the same one call_model() uses.
+MODEL = os.getenv("NEGOTIATOR_MODEL") or config.azure_openai_deployment or "gpt-4o"
 USE_LLM = os.getenv("NEGOTIATOR_USE_LLM", "1") != "0"
 TIMEOUT_S = float(os.getenv("NEGOTIATOR_TIMEOUT_S", "20"))
 MIN_DELAY = float(os.getenv("NEGOTIATOR_MIN_DELAY_S", "3"))   # so the demo feels live
 MAX_DELAY = float(os.getenv("NEGOTIATOR_MAX_DELAY_S", "6"))
 SPEED = {"firm": 0.6, "balanced": 1.0, "flexible": 1.5}       # how fast it concedes
-
-_client = None
 
 
 def reply_delay() -> float:
@@ -63,20 +66,27 @@ def _money(p, n) -> str:
 
 # ----------------------------------------------------------------------------- LLM
 async def _llm_json(system: str, user: str) -> Dict[str, Any]:
-    global _client
-    from anthropic import AsyncAnthropic  # lazy import
-    if _client is None:
-        _client = AsyncAnthropic()  # reads ANTHROPIC_API_KEY
+    client = get_async_openai_client()
     r = await asyncio.wait_for(
-        _client.messages.create(model=MODEL, max_tokens=400, system=system,
-                                messages=[{"role": "user", "content": user}]),
+        client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            response_format={"type": "json_object"},
+            max_completion_tokens=600,  # reasoning models need headroom
+        ),
         TIMEOUT_S,
     )
-    text = "".join(b.text for b in r.content if getattr(b, "type", "") == "text")
-    m = re.search(r"\{.*\}", text, re.S)
-    if not m:
-        raise ValueError("no JSON in model reply")
-    return json.loads(m.group(0))
+    text = (r.choices[0].message.content or "").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.S)  # fallback if the model wraps the JSON in text
+        if not m:
+            raise ValueError("no JSON in model reply")
+        return json.loads(m.group(0))
 
 
 def _system_prompt(p: Dict[str, Any]) -> str:

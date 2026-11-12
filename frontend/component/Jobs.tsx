@@ -85,6 +85,7 @@ const BLOCKED: Record<BlockedOn, string> = {
   revision: "Waiting for the freelancer to submit a revision",
   payment_confirmation: "Waiting for the bank to confirm the payment",
   your_approval: "Waiting for your approval",
+  budget_approval: "Waiting for your approval to go above budget",
 };
 
 const FAIL: Record<FailureKind, string> = {
@@ -849,7 +850,7 @@ export default function Jobs() {
             return (
               <button
                 key={t.id}
-                className={`jb-tab ${tab === t.id ? "active" : ""} ${t.id === "ready" && n > 0 && tab !== "ready" ? "attn" : ""}`}
+                className={`jb-tab ${tab === t.id ? "active" : ""} ${t.id === "ready" && n > 0 && tab !== "ready" ? "attn" : ""} ${t.id === "waiting" && tab !== "waiting" && byTab.waiting.some((j) => j.pendingApproval) ? "attn" : ""}`}
                 onClick={() => { setTab(t.id); setOpen(false); }}
               >
                 {t.live && n > 0 && <span className="jb-live" />}
@@ -1041,6 +1042,25 @@ export default function Jobs() {
                       <StageTrack job={sel!} bucket={tab} />
                     )}
                     <NowBanner job={sel!} bucket={tab} />
+                    {sel!.status === "waiting" && sel!.pendingApproval && (
+  <div className="jb-now waiting" style={{ flexDirection: "column", alignItems: "flex-start" }}>
+    <div>
+      {sel!.pendingApproval.freelancer} wants {money(sel!.pendingApproval.price, sel!.currency)}, above your
+      max of {money(sel!.pendingApproval.max, sel!.currency)}. Allow it?
+    </div>
+    <div className="jb-btns" style={{ marginTop: 0 }}>
+      <button className="jb-btn primary" disabled={busy}
+        onClick={() => act(() => jobsApi.approveBudget(sel!.id), "Approved. Deal agreed")}>
+        <Check size={15} />Approve {money(sel!.pendingApproval.price, sel!.currency)}
+      </button>
+      <button className="jb-btn danger" disabled={busy}
+        onClick={() => act(() => jobsApi.declineBudget(sel!.id), "Declined. Trying the next freelancer")}>
+        <X size={15} />Decline
+      </button>
+    </div>
+  </div>
+)}
+                    
                     <NegotiationLive key={`n${sel!.id}`} job={sel!} />
                     <Facts job={sel!} />
                     <JobFiles

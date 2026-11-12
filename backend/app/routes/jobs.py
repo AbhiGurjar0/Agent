@@ -111,3 +111,12 @@ async def hire_candidate(job_id: str, body: HireBody, db=Depends(get_database), 
 @router.get("/{job_id}/thread")
 async def job_thread(job_id: str, db=Depends(get_database), user=Depends(get_current_user)):
     return await _do(engine.thread(_ctx(db, user), job_id))
+
+@router.post("/{job_id}/approve-budget")
+async def approve_budget(job_id: str, db=Depends(get_database), user=Depends(get_current_user)):
+    return await _do(engine.approve_budget(_ctx(db, user), job_id))
+
+
+@router.post("/{job_id}/decline-budget")
+async def decline_budget(job_id: str, db=Depends(get_database), user=Depends(get_current_user)):
+    return await _do(engine.decline_budget(_ctx(db, user), job_id))

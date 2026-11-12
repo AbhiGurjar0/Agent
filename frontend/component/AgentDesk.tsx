@@ -22,6 +22,20 @@ export default function AgentDesk({ job, onDone }: { job: Job; onDone: () => unk
 
   useEffect(() => { setPrice(lastOffer ? String(lastOffer.price ?? "") : ""); setMsg(""); }, [lastOffer?.round, job.id]); // eslint-disable-line
 
+  const needsApproval = job.status === "waiting" && job.blockedOn === "budget_approval";
+  if (needsApproval) {
+    return (
+      <div style={{ marginTop: 18, padding: 16, borderRadius: 16, background: "#fff7e6", border: "1.5px solid #ffd58a" }}>
+        <h3 className="jb-h3" style={{ marginTop: 0 }}>Waiting for the client</h3>
+        <p className="jb-desc">
+          {job.pendingApproval
+            ? `Your price of ${job.currency} ${job.pendingApproval.price} is above the client's budget limit. `
+            : ""}
+          The client needs to approve it first. They'll get back to you shortly, and this view updates by itself.
+        </p>
+      </div>
+    );
+  }
   if (!answering && !submitting) return null;
 
   const run = async (fn: () => Promise<unknown>) => {

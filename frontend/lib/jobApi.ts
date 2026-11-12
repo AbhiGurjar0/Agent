@@ -31,7 +31,9 @@ export type BlockedOn =
   | "work_submission"
   | "revision"
   | "payment_confirmation"
-  | "your_approval";
+  | "your_approval"
+  | "budget_approval";
+
 
 export type FailureKind =
   | "no_freelancer"
@@ -90,7 +92,8 @@ export type Job = {
   lastValidation?: Validation | null;
   payment?: { status: string; ref?: string; attempts?: number; amount?: number; error?: string | null } | null;
   submission?: { content: string; links: string[]; ts: number } | null;
-    files?: { id: string; filename: string; size: number; content_type?: string | null; source?: string }[];
+  files?: { id: string; filename: string; size: number; content_type?: string | null; source?: string }[];
+  pendingApproval?: { price: number; max: number; freelancer: string; ts: number } | null;
 };
 
 export type JobDraft = Pick<
@@ -133,6 +136,8 @@ export const jobsApi = {
   discard: (id: string) => j<void>(`/jobs/${id}`, { method: "DELETE" }),
   cancel: (id: string) => post<Job>(`/jobs/${id}/cancel`),
   nudge: (id: string) => post<Job>(`/jobs/${id}/nudge`),
+  approveBudget: (id: string) => post<Job>(`/jobs/${id}/approve-budget`),
+  declineBudget: (id: string) => post<Job>(`/jobs/${id}/decline-budget`),
   retry: (id: string) => post<Job>(`/jobs/${id}/retry`),
   // replies: wakes the agent immediately
   reply: (id: string, body: { message: string; sender: "freelancer" | "user"; type?: string; price?: number; links?: string[] }) =>

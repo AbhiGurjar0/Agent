@@ -4,17 +4,13 @@ import { API } from "./api";
 
 export type JobStatus =
   | "running"
-  | "done"
   | "waiting_for_agent"
-  | "under_review"
   | "payment_received"
   | "bug_reported";
 
 export const STATUS_META: Record<JobStatus, { label: string; cls: string }> = {
   running: { label: "Running", cls: "text-[#3a6fe0]" },
-  done: { label: "Done", cls: "text-emerald-600" },
   waiting_for_agent: { label: "Waiting for agent", cls: "text-amber-600" },
-  under_review: { label: "Under review", cls: "text-violet-600" },
   payment_received: { label: "Payment received", cls: "text-teal-600" },
   bug_reported: { label: "Bug reported", cls: "text-rose-600" },
 };

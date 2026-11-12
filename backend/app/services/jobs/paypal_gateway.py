@@ -57,18 +57,22 @@ class PayPalGateway:
         email = self._receiver(job)
         if not email:
             return {"status": "failed", "ref": None, "error": "No PayPal email for this freelancer"}
+        key = idem.replace(":", "-")
 
         body = {
             "sender_batch_header": {
-                "sender_batch_id": idem.replace(":", "-"),   # unique per job+attempt
+                "sender_batch_id": key,   # unique per job+attempt
                 "email_subject": "You have received a payment",
+            
             },
             "items": [{
                 "recipient_type": "EMAIL",
                 "receiver": email,
                 "amount": {"value": f"{amount:.2f}", "currency": currency},
                 "note": f"Payment for: {job.get('title', 'job')}"[:160],
-                "sender_item_id": idem.replace(":", "-"),
+                "sender_item_id": key,
+                
+                
             }],
         }
         try:
@@ -77,21 +81,22 @@ class PayPalGateway:
                 r = await c.post(
                     f"{BASE}/v1/payments/payouts", json=body,
                     headers={"Authorization": f"Bearer {token}",
-                             "PayPal-Request-Id": idem.replace(":", "-")},  # PayPal-side idempotency
+                             "PayPal-Request-Id": key},  # PayPal-side idempotency
                 )
         except httpx.TimeoutException:
-            # Unknown outcome: do NOT silently report success. Engine will retry with a new attempt,
-            # so check the sandbox dashboard if this happens.
-            return {"status": "failed", "ref": None, "error": "PayPal timed out (outcome unknown)"}
+            return {"status": "failed", "ref": None, "ambiguous": True,
+                "error": "PayPal timed out (outcome unknown). Retrying safely with the same key"}
+           
         except Exception as e:  # noqa: BLE001
-            return {"status": "failed", "ref": None, "error": f"PayPal error: {str(e)[:150]}"}
+            return {"status": "failed", "ref": None, "ambiguous": True, "error": f"PayPal error: {str(e)[:150]}"}
 
         if r.status_code not in (200, 201):
             try:
                 err = r.json().get("message") or r.text
             except Exception:  # noqa: BLE001
                 err = r.text
-            return {"status": "failed", "ref": None, "error": f"PayPal {r.status_code}: {str(err)[:200]}"}
+            return {"status": "failed", "ref": None, "ambiguous": r.status_code >= 500,
+            "error": f"PayPal {r.status_code}: {str(err)[:200]}"}
 
         batch_id = r.json()["batch_header"]["payout_batch_id"]
         return {"status": "pending", "ref": batch_id, "error": None}

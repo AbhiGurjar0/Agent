@@ -283,6 +283,8 @@ class JobEngine:
     async def nudge(self, uid: str, jid: str) -> Dict[str, Any]:
         async with self._lock(jid):
             job = await self._load(jid, uid)
+            if job.get("blockedOn") in ("budget_approval", "your_approval"):
+                raise JobError(409, "The job is waiting on you, not the freelancer")
             if job["status"] != "waiting":
                 raise JobError(409, "Nothing to remind: the job is not waiting")
             texts = {"freelancer_reply": "Quick reminder: could you reply to my offer?",
@@ -472,6 +474,9 @@ class JobEngine:
         return float(job.get("maxBudget") or job["budget"])
 
     async def _do_negotiate(self, job, now) -> bool:
+        if job.get("pendingApproval"):
+            await self._wait(job, "budget_approval")
+            return False
         s = job["_s"]
         if not job.get("freelancer"):
             await self._save(job, stage="hire")
@@ -528,13 +533,15 @@ class JobEngine:
             return
         # above the ceiling
         if last >= ceil or rnd >= MAX_ROUNDS:
-            return await self._next_candidate(job, f"{who} wants {self._m(job, c)}, above your max {self._m(job, ceil)}")
+            return await self._ask_over_budget(job, c)
         nxt = ceil if ceil - last < 0.05 * ceil else min(ceil, _r(last + (ceil - last) * 0.6))
         await self._sset(job, next_offer=nxt)
         await self._log(job, "warn", f"{self._m(job, c)} is above your max {self._m(job, ceil)}. Countering at {self._m(job, nxt)}.")
 
     async def _agree(self, job, price: float) -> None:
         price = _r(float(price))
+        if price > self._ceiling(job) + 0.01:
+            return await self._ask_over_budget(job, price)
         await self._save(job, agreedPrice=price)
         await self._sset(job, outstanding=False, assigned=False, revising=False, approved=False, validated_sub=None, val_errors=0)
         await self._say(job, "message", f"Great, we have a deal at {self._m(job, price)}. I will send the full brief now.", price)
@@ -640,26 +647,36 @@ class JobEngine:
                 return await self._pay_failed(job, p, st.get("error") or "Payment failed")
             await self._wait(job, "payment_confirmation")
             return False
+        key = p.get("idem_key")
+        if not key:
+            key = f"{job['_id']}-{uuid.uuid4().hex[:12]}"
+            p = {**p, "idem_key": key}
+            await self._save(job, payment=p)          # persisted BEFORE charging (survives crashes)
         attempts = int(p.get("attempts", 0)) + 1
         await self._busy(job, "processing_payment" if attempts == 1 else "retrying_payment")
         await self._log(job, "info", f"Paying {self._m(job, amount)} to {self._who(job)} (attempt {attempts})")
-        res = await market.gateway.charge(job, amount, cur, f"{job['_id']}:{attempts}")
+        res = await market.gateway.charge(job, amount, cur, key)
         if res["status"] == "failed":
-            return await self._pay_failed(job, {**p, "attempts": attempts}, res["error"])
-        await self._save(job, payment={"status": "pending", "ref": res["ref"], "attempts": attempts, "amount": amount, "error": None})
+            return await self._pay_failed(job, {**p, "attempts": attempts}, res["error"], ambiguous=res.get("ambiguous", False))
+        await self._save(job, payment={**p, "status": "pending", "ref": res["ref"], "attempts": attempts,
+                                       "amount": amount, "error": None})
         await self._wait(job, "payment_confirmation")
         return True
 
-    async def _pay_failed(self, job, p: Dict[str, Any], err: str) -> bool:
+    async def _pay_failed(self, job, p, err: str, ambiguous: bool = False) -> bool:
+        p = dict(p)
         attempts = int(p.get("attempts", 1))
+        if not ambiguous:               # definitive failure: next try is a NEW payment
+            p.pop("idem_key", None)
+            p.pop("ref", None)
         await self._log(job, "error", f"Payment attempt {attempts} failed: {err}")
         if attempts >= MAX_PAY_ATTEMPTS:
             await self._save(job, payment={**p, "status": "failed", "error": err})
-            return await self._fail(job, "payment_failed", f"Payment failed after {attempts} attempts: {err}", "payment", retryable=True)
+            return await self._fail(job, "payment_failed",
+                                    f"Payment failed after {attempts} attempts: {err}", "payment", retryable=True)
         await self._save(job, payment={**p, "status": "retry", "error": err, "attempts": attempts})
         await asyncio.sleep(1.0)
         return True
-
     async def _complete(self, job) -> bool:
         await self._say(job, "message", "Payment sent. Thank you, great working with you!")
         await self._save(job, status="completed", progress=100, activity=None, blockedOn=None, waitingSince=None)
@@ -757,10 +774,48 @@ class JobEngine:
                     self.wake(str(r["_id"]))
             except Exception as e:  # noqa: BLE001
                 log.warning(f"[Jobs] ticker error: {e}")
+                
+    async def _ask_over_budget(self, job, price: float) -> None:
+        ceil = self._ceiling(job)
+        await self._sset(job, outstanding=False)
+        await self._save(job, pendingApproval={
+            "price": price, "max": ceil, "freelancer": self._who(job), "ts": time.time()})
+        await self._log(job, "warn",
+            f"{self._who(job)} needs {self._m(job, price)}, above your max {self._m(job, ceil)}. Waiting for your approval.")
+        await self._say(job, "message",
+            f"Thanks for your reply. {self._m(job, price)} is above what I'm authorised to pay, "
+            "so I need to get my client's approval. I'll get back to you shortly.")
+        await self._wait(job, "budget_approval")
+    async def approve_budget(self, uid: str, jid: str) -> Dict[str, Any]:
+        async with self._lock(jid):
+            job = await self._load(jid, uid)
+            pa = job.get("pendingApproval")
+            if not pa or job["status"] != "waiting":
+                raise JobError(409, "Nothing is waiting for a budget approval")
+            price = float(pa["price"])
+            await self._save(job, maxBudget=max(self._ceiling(job), price), pendingApproval=None,
+                             status="running", blockedOn=None, waitingSince=None)
+            await self._log(job, "success", f"You approved going above budget. Max raised to {self._m(job, price)}")
+            await self._agree(job, price)
+        self.wake(jid)
+        return public(job)
+
+    async def decline_budget(self, uid: str, jid: str) -> Dict[str, Any]:
+        async with self._lock(jid):
+            job = await self._load(jid, uid)
+            pa = job.get("pendingApproval")
+            if not pa or job["status"] != "waiting":
+                raise JobError(409, "Nothing is waiting for a budget approval")
+            await self._save(job, pendingApproval=None, status="running", blockedOn=None, waitingSince=None)
+            await self._next_candidate(job, f"You declined {self._m(job, pa['price'])} (above your max)")
+        self.wake(jid)
+        return public(job)
 
 
 def ceiling_ok(ceil: float) -> float:
     return ceil
+
+
 
 
 engine = JobEngine()
