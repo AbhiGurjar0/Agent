@@ -6,7 +6,7 @@ Give Foreman a task and a budget. It finds freelancers, haggles the price for yo
 
 Built for the **Build What's Next with PayPal and AI** hackathon.
 
-- **Live demo:** `<YOUR_RENDER_URL>`
+- **Live demo:** `https://agent-03d4.onrender.com`
 
 
 ---
