@@ -10,7 +10,6 @@ from datetime import datetime
 SAFE_WORKSPACE = Path("./workspace").resolve()
 SAFE_WORKSPACE.mkdir(exist_ok=True)
 
-pyautogui.FAILSAFE = True
 
 def take_screenshot() -> str:
     """Takes a screenshot of the current desktop and saves it to the workspace."""
