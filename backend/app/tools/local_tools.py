@@ -15,6 +15,10 @@ pyautogui.FAILSAFE = True
 
 def take_screenshot() -> str:
     """Takes a screenshot of the current desktop and saves it to the workspace."""
+    try:
+        import pyautogui
+    except Exception as e:
+        return f"Screenshot unavailable on this server: {e}"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = f"screenshot_{timestamp}.png"
     screenshot_path = SAFE_WORKSPACE / filename
@@ -25,6 +29,8 @@ def take_screenshot() -> str:
 def handle_gui_action(action: str, text: str = None, x: int = None, y: int = None, key: str = None) -> str:
     """Simulates mouse clicks, typing, and keypresses on the desktop."""
     try:
+        import pyautogui
+        pyautogui.FAILSAFE = True
         time.sleep(0.5)
         if action == "click":
             if x is not None and y is not None:
