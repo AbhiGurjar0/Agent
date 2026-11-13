@@ -5,12 +5,10 @@ from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from openai import AsyncOpenAI
-from app.ai.config import configget_text_embedding
+from app.ai.config import  config
 from app.db.database import get_database
 from app.db.memory_doc import agent_memory_document
 from app.ai.embedder import embed
-
-
 db = get_database()
 
 

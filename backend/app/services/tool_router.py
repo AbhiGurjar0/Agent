@@ -3,7 +3,6 @@ import numpy as np
 from app.ai.embedder import embed
 
 # Load your local embedding model once on startup
-embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 class DynamicToolRouter:
     def __init__(self, all_tools: list[dict], always_include: list[str] = None):
