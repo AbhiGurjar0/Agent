@@ -82,7 +82,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Leave NEXT_PUBLIC_API_URL empty if the API is on the same origin (or proxied).
 const API = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/"
+  process.env.NEXT_PUBLIC_API_URL ?? "https://paypal-agent-backend.onrender.com/"
 ).replace(/\/$/, "");
 
 async function call(path: string, init: RequestInit) {
