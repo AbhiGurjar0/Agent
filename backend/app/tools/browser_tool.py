@@ -1,8 +1,6 @@
 import asyncio
 import random
 from pathlib import Path
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
 
 SESSION_DIR = Path("./workspace/.auth")
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
@@ -12,6 +10,8 @@ async def execute_browser_automation(actions: list, session_id: str = "default")
     Executes a sequence of dynamic browser actions using Playwright with stealth.
     Properly handles and reports failure statuses.
     """
+    from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth
     results = []
     state_file = SESSION_DIR / f"{session_id}.json"
     has_error = False

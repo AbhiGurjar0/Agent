@@ -1,6 +1,5 @@
 import time
 import subprocess
-import pyautogui
 
 def get_retina_scale_factor() -> float:
     """
@@ -30,6 +29,7 @@ def handle_gui_action(
 ) -> str:
     """Simulates mouse clicks, typing, and keypresses on the desktop with scale correction."""
     try:
+        import pyautogui
         time.sleep(0.5)
         scale_factor = get_retina_scale_factor()
 
