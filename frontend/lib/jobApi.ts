@@ -4,6 +4,12 @@
 // res.json() throws "JSON.parse: unexpected character at line 1 column 1".
 const ROOT = (process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE ?? "https://paypal-agent-backend.onrender.com").replace(/\/$/, "");
 export const BASE = /\/api\/v\d+$/.test(ROOT) ? ROOT : `${ROOT}/api/v1`;
+import { getToken, clearToken } from "./auth";
+
+function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 export type Stage = "hire" | "negotiate" | "work" | "validate" | "payment";
 export const STAGES: { id: Stage; label: string }[] = [
@@ -106,7 +112,10 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     r = await fetch(`${BASE}${path}`, {
       credentials: "include",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+      "Content-Type": "application/json",
+      ...authHeaders(),
+    },
       ...init,
     });
   } catch {
