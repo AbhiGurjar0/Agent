@@ -4,7 +4,6 @@ import platform
 import subprocess
 import shutil
 from pathlib import Path
-import pyautogui
 import time
 from datetime import datetime
 
