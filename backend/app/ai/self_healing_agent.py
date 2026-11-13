@@ -5,11 +5,9 @@ import io
 import os
 from pathlib import Path
 from PIL import Image
-
 from app.schemas.healing_schema import HealingStrategy
 from app.tools.browser_tool import execute_browser_automation
 from app.tools.gui_tool import handle_gui_action
-from app.client_mic import capture_active_screen
 from app.tools.vision_tool import find_element_on_screen
 
 # Import your custom model client and config
@@ -113,7 +111,7 @@ class SelfHealingReActEngine:
 
             # --- HEALING PHASE ---
             print("🩹 Initiating Self-Healing Visual Diagnostics...")
-            screenshot_path = capture_active_screen() or (SAFE_WORKSPACE / "active_screen.jpg")
+            screenshot_path = (SAFE_WORKSPACE / "active_screen.jpg")
             
             # 1. Run Vision Diagnosis
             failed_step = next((actions[i] for i, item in enumerate(logs) if isinstance(item, dict) and "error" in item), actions[-1])

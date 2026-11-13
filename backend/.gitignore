@@ -2,4 +2,7 @@
 /client_secret.json
 workspace/.auth/
 workspace
-tmp_model
+tmp_model__pycache__/
+*.pyc
+.env
+app/workspace/.auth/

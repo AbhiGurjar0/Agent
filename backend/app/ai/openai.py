@@ -5,29 +5,18 @@ from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 from openai import AsyncOpenAI, AsyncAzureOpenAI
 from openai import AsyncOpenAI
-from sentence_transformers import SentenceTransformer
-from app.ai.config import config
+from app.ai.config import  config
 from app.db.database import get_database
 from app.db.memory_doc import agent_memory_document
-
-
+from app.ai.embedder import embed
 db = get_database()
-embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
 
 
 async def get_text_embedding(text: str) -> list[float]:
-    """Generates a 384-dimensional vector embedding locally using HuggingFace BGE."""
     if not text or not text.strip():
         return []
-
-    # Run in a thread pool to keep FastAPI event loop async and fast
-    embedding = await asyncio.to_thread(
-        embedding_model.encode, 
-        text, 
-        normalize_embeddings=True
-    )
-    
-    return embedding.tolist()
+    vec = await asyncio.to_thread(embed, text)
+    return vec.tolist()
 
 
 def get_async_openai_client():

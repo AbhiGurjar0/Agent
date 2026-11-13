@@ -30,7 +30,7 @@ from app.tools.gui_tool import handle_gui_action
 
 # Vision targeting
 from app.tools.vision_tool import find_element_on_screen
-from app.client_mic import capture_active_screen
+from app.tools.screen import capture_active_screen
 
 # Model client + config
 from app.ai.openai import get_async_openai_client
