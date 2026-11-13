@@ -1,6 +1,6 @@
 # app/services/tool_router.py
 import numpy as np
-from sentence_transformers import SentenceTransformer
+from app.ai.embedder import embed
 
 # Load your local embedding model once on startup
 embedding_model = SentenceTransformer("BAAI/bge-small-en-v1.5")
@@ -22,7 +22,7 @@ class DynamicToolRouter:
         ]
         
         # 2. Pre-compute and cache tool embeddings in memory
-        self.tool_embeddings = embedding_model.encode(self.tool_descriptions, normalize_embeddings=True)
+        self.tool_embeddings = embed(self.tool_descriptions)      # line 25
 
     def select_tools(self, user_prompt: str, top_k: int = 3) -> list[dict]:
         """Returns only the top_k most relevant tool schemas for the given prompt."""
@@ -30,7 +30,7 @@ class DynamicToolRouter:
             return []
 
         # Embed user prompt
-        prompt_embedding = embedding_model.encode(user_prompt, normalize_embeddings=True)
+        prompt_embedding = embed(user_prompt)  
         
         # Cosine similarity dot product (normalized vectors)
         similarities = np.dot(self.tool_embeddings, prompt_embedding)
