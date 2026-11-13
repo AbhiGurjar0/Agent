@@ -1,6 +1,7 @@
 // Talks to the FastAPI /agents routes.
 // Uses the same API root and auth as lib/api.ts (cookie + optional Bearer token).
 import { API } from "./api";
+import { getToken } from "./auth";
 
 export type JobStatus =
   | "running"
@@ -56,9 +57,10 @@ export type Agent = AgentInput & { id: string; tasks: AgentTask[] };
 
 export type Stats = Record<JobStatus, number> & { total: number };
 
+
+
 function authHeaders(): Record<string, string> {
-  if (typeof window === "undefined") return {};
-  const token = localStorage.getItem("token");
+  const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
