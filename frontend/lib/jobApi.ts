@@ -2,7 +2,7 @@
 // IMPORTANT: BASE must point at your FastAPI server (same host you use in lib/api.ts).
 // An empty BASE sends /jobs to the Next.js dev server, which answers with an HTML 404 page, and then
 // res.json() throws "JSON.parse: unexpected character at line 1 column 1".
-const ROOT = (process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE ?? "https://paypal-agent-backend.onrender.com").replace(/\/$/, "");
+const ROOT = (process.env.NEXT_PUBLIC_API_URL ?? process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000").replace(/\/$/, "");
 export const BASE = /\/api\/v\d+$/.test(ROOT) ? ROOT : `${ROOT}/api/v1`;
 
 export type Stage = "hire" | "negotiate" | "work" | "validate" | "payment";

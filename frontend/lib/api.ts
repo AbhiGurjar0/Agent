@@ -1,7 +1,7 @@
 // lib/api.ts
 // NEXT_PUBLIC_API must point at the API root including the version, e.g. http://localhost:8000/api/v1
 export const API = (
-  process.env.NEXT_PUBLIC_API ?? "http://localhost:8000/api/v1"
+  process.env.NEXT_PUBLIC_API ?? "https://paypal-agent-backend.onrender.com/api/v1"
 ).replace(/\/$/, "");
 import { getToken, clearToken } from "./auth";
 
