@@ -1,11 +1,8 @@
 import base64
 from typing import Optional
 from pydantic import BaseModel
-from openai import AsyncOpenAI
-import os
-
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+from app.ai.openai import get_async_openai_client
+from app.ai.config import config
 # 1. Define the Structured Output Schema
 class ElementCoordinates(BaseModel):
     found: bool
@@ -37,8 +34,9 @@ async def find_element_on_screen(image_path: str, element_description: str) -> d
 
     try:
         # Use GPT-4o for high-accuracy vision
+        client = get_async_openai_client()
         response = await client.beta.chat.completions.parse(
-            model="gpt-4o",
+            model=config.azure_openai_deployment or "gpt-4o",
             messages=[
                 {
                     "role": "user",
